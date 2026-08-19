@@ -1,0 +1,16 @@
+name = "rtc-transfer-signaling"
+main = "build/worker/shim.mjs"
+compatibility_date = "2026-08-18"
+workers_dev = true
+
+[build]
+command = "cargo install -q --locked --root .worker-build 'worker-build@^0.1' && .worker-build/bin/worker-build --release"
+
+[durable_objects]
+bindings = [
+  { name = "SIGNAL_ROOMS", class_name = "SignalRoom" }
+]
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["SignalRoom"]

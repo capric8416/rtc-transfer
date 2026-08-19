@@ -1,0 +1,22 @@
+[package]
+name = "rtc-transfer-signaling"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = false
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+wasm-bindgen = "=0.2.105"
+worker = "0.6"
+
+[profile.release]
+lto = true
+strip = true
+codegen-units = 1
