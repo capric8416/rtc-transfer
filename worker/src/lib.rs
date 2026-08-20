@@ -114,6 +114,7 @@ impl DurableObject for SignalRoom {
         if req.path() == "/presence" {
             return Response::from_json(&serde_json::json!({
                 "online": !self.state.get_websockets_with_tag("host").is_empty()
+                    || !self.state.get_websockets_with_tag("presence").is_empty()
             }));
         }
         if !is_websocket_upgrade(&req)? {

@@ -32,6 +32,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   final _targetCode = TextEditingController();
   final _targetCodeFocus = FocusNode();
   Map<String, bool> _onlineDevices = const {};
+  bool _restoringHosting = false;
 
   @override
   void initState() {
@@ -110,6 +111,26 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
   void _onSessionChanged() {
     if (mounted) setState(() {});
+    if (_session.isPeer &&
+        (_session.status == PeerStatus.disconnected ||
+            _session.status == PeerStatus.error)) {
+      unawaited(_restoreHosting(errorMessage: _session.errorMessage));
+    }
+  }
+
+  Future<void> _restoreHosting({String? errorMessage}) async {
+    if (_restoringHosting || !mounted) return;
+    _restoringHosting = true;
+    try {
+      await _startHosting();
+      if (mounted && errorMessage != null && errorMessage.isNotEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(errorMessage)),
+        );
+      }
+    } finally {
+      _restoringHosting = false;
+    }
   }
 
   Future<void> _onPaired(String identifier) async {
@@ -176,7 +197,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                 session: _session,
                 onDisconnect: () async {
                   await _session.disconnect();
-                  await _startHosting();
+                  await _restoreHosting();
                 },
               )
             : _buildConnectionPage(context),

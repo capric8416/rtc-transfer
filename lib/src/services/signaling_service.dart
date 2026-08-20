@@ -52,9 +52,17 @@ class SignalingService {
           _messages.add({'type': 'error', 'message': '信令消息格式错误'});
         }
       },
-      onError: (Object error) =>
-          _messages.add({'type': 'error', 'message': error.toString()}),
-      onDone: () => _messages.add({'type': 'signaling_closed'}),
+      onError: (Object error) {
+        if (identical(_socket, socket)) _socket = null;
+        _messages.add({'type': 'error', 'message': error.toString()});
+      },
+      onDone: () {
+        if (identical(_socket, socket)) {
+          _socket = null;
+          _subscription = null;
+        }
+        _messages.add({'type': 'signaling_closed'});
+      },
     );
   }
 

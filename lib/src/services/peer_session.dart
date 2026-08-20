@@ -101,6 +101,7 @@ class PeerSession extends ChangeNotifier {
   bool get _isDataChannelOpen =>
       _dataChannel?.state == RTCDataChannelState.RTCDataChannelOpen;
   bool get isConnected => status == PeerStatus.connected && _isDataChannelOpen;
+  bool get isPeer => _role == SignalingRole.peer;
   String? get remoteIdentifier => _targetIdentifier;
 
   Future<void> host({
