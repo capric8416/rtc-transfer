@@ -10,6 +10,7 @@ class SignalingService {
 
   final _messages = StreamController<Map<String, dynamic>>.broadcast();
   Stream<Map<String, dynamic>> get messages => _messages.stream;
+  bool get isOpen => _socket?.readyState == WebSocket.open;
 
   Future<void> connect({
     required String baseUrl,

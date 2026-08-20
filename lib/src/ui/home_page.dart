@@ -24,7 +24,7 @@ class HomePage extends StatefulWidget {
   State<HomePage> createState() => _HomePageState();
 }
 
-class _HomePageState extends State<HomePage> {
+class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   late PeerSession _session;
   final PresenceService _presence = PresenceService();
   Timer? _timer;
@@ -36,6 +36,7 @@ class _HomePageState extends State<HomePage> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _session = PeerSession(
       sharedRoot: widget.settings.sharedRoot,
       receiveDirectory: widget.settings.receiveDirectory,
@@ -48,6 +49,13 @@ class _HomePageState extends State<HomePage> {
       _startHosting();
       _refreshPresence();
     });
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state != AppLifecycleState.resumed) return;
+    _session.ensureHosting();
+    unawaited(_startPresence());
   }
 
   void _tick(Timer timer) {
@@ -128,6 +136,7 @@ class _HomePageState extends State<HomePage> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _timer?.cancel();
     _targetIdentifier.dispose();
     _targetCode.dispose();

@@ -53,6 +53,7 @@ class PeerSession extends ChangeNotifier {
 
   static const _chunkSize = 32 * 1024;
   static const _maxBufferedBytes = 4 * 1024 * 1024;
+  static const _connectionTimeoutDuration = Duration(seconds: 30);
   static const _iceServers = [
     {'urls': 'stun:stun.cloudflare.com:3478'},
     {'urls': 'stun:stun.l.google.com:19302'},
@@ -76,6 +77,12 @@ class PeerSession extends ChangeNotifier {
   final Map<String, Completer<void>> _outgoingAcknowledgements = {};
   final Map<String, Completer<void>> _outgoingBatchAcknowledgements = {};
   Future<void> _incomingMessageQueue = Future<void>.value();
+  Timer? _connectionTimeout;
+  Timer? _hostReconnectTimer;
+  String? _hostSignalingUrl;
+  String? _hostIdentifier;
+  String? _hostToken;
+  int _hostReconnectAttempt = 0;
   bool _remoteDescriptionSet = false;
   bool _hasPendingOffer = false;
   bool _initialDirectoryRequested = false;
@@ -103,8 +110,23 @@ class PeerSession extends ChangeNotifier {
   }) async {
     await disconnect();
     _role = SignalingRole.host;
-    _setStatus(PeerStatus.waiting);
+    _hostSignalingUrl = signalingUrl;
+    _hostIdentifier = identifier;
+    _hostToken = hostToken;
     await _listenToSignals();
+    await _connectHost(rethrowOnFailure: true);
+  }
+
+  Future<void> _connectHost({bool rethrowOnFailure = false}) async {
+    final signalingUrl = _hostSignalingUrl;
+    final identifier = _hostIdentifier;
+    final hostToken = _hostToken;
+    if (_role != SignalingRole.host ||
+        signalingUrl == null ||
+        identifier == null ||
+        hostToken == null) {
+      return;
+    }
     try {
       await _signaling.connect(
         baseUrl: signalingUrl,
@@ -113,9 +135,31 @@ class PeerSession extends ChangeNotifier {
         clientIdentifier: identifier,
         hostToken: hostToken,
       );
+      _hostReconnectAttempt = 0;
+      if (!isConnected) _setStatus(PeerStatus.waiting);
     } catch (error) {
-      _fail('无法连接信令服务：$error');
-      rethrow;
+      _fail('无法连接信令服务，正在重试：$error');
+      _scheduleHostReconnect();
+      if (rethrowOnFailure) rethrow;
+    }
+  }
+
+  void _scheduleHostReconnect({bool immediate = false}) {
+    if (_role != SignalingRole.host || _hostReconnectTimer != null) return;
+    final exponent = min(_hostReconnectAttempt, 4);
+    final delay = immediate
+        ? Duration.zero
+        : Duration(seconds: min(30, 2 * (1 << exponent)));
+    _hostReconnectAttempt++;
+    _hostReconnectTimer = Timer(delay, () {
+      _hostReconnectTimer = null;
+      unawaited(_connectHost());
+    });
+  }
+
+  void ensureHosting() {
+    if (_role == SignalingRole.host && !_signaling.isOpen) {
+      _scheduleHostReconnect(immediate: true);
     }
   }
 
@@ -228,7 +272,10 @@ class PeerSession extends ChangeNotifier {
           _fail(message['message'] as String? ?? '信令服务错误');
           break;
         case 'signaling_closed':
-          if (!isConnected && status != PeerStatus.idle) {
+          if (_role == SignalingRole.host) {
+            if (!isConnected) _fail('主机信令连接已断开，正在重连');
+            _scheduleHostReconnect();
+          } else if (!isConnected && status != PeerStatus.idle) {
             _fail('信令连接已断开');
           }
           break;
@@ -1054,17 +1101,38 @@ class PeerSession extends ChangeNotifier {
 
   void _setStatus(PeerStatus value) {
     status = value;
+    if (value == PeerStatus.connecting) {
+      _connectionTimeout ??= Timer(_connectionTimeoutDuration, () {
+        if (status == PeerStatus.connecting && !isConnected) {
+          _fail('建立 P2P 连接超时（30 秒），请重试或检查 TURN 配置');
+        }
+      });
+    } else {
+      _connectionTimeout?.cancel();
+      _connectionTimeout = null;
+    }
     if (value != PeerStatus.error) errorMessage = null;
     notifyListeners();
   }
 
   void _fail(String message) {
+    _connectionTimeout?.cancel();
+    _connectionTimeout = null;
     errorMessage = message;
     status = PeerStatus.error;
     notifyListeners();
   }
 
   Future<void> disconnect() async {
+    _hostReconnectTimer?.cancel();
+    _hostReconnectTimer = null;
+    _hostReconnectAttempt = 0;
+    _hostSignalingUrl = null;
+    _hostIdentifier = null;
+    _hostToken = null;
+    _role = null;
+    _connectionTimeout?.cancel();
+    _connectionTimeout = null;
     for (final acknowledgement in _outgoingAcknowledgements.values) {
       if (!acknowledgement.isCompleted) {
         acknowledgement.completeError(StateError('连接已断开'));
