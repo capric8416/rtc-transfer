@@ -9,6 +9,7 @@ import 'package:qr_flutter/qr_flutter.dart';
 import '../models/file_entry.dart';
 import '../models/transfer_task.dart';
 import '../services/app_settings.dart';
+import '../services/lan_discovery_service.dart';
 import '../services/peer_session.dart';
 import '../services/presence_service.dart';
 import '../services/receive_storage.dart';
@@ -27,11 +28,14 @@ class HomePage extends StatefulWidget {
 class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   late PeerSession _session;
   final PresenceService _presence = PresenceService();
+  late final LanDiscoveryService _lanDiscovery;
+  StreamSubscription<List<LanDevice>>? _lanDevicesSubscription;
   Timer? _timer;
   final _targetIdentifier = TextEditingController();
   final _targetCode = TextEditingController();
   final _targetCodeFocus = FocusNode();
   Map<String, bool> _onlineDevices = const {};
+  Map<String, LanDevice> _lanDevices = const {};
   bool _restoringHosting = false;
 
   @override
@@ -44,10 +48,21 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       totpSecret: widget.settings.totpSecret,
       onPaired: _onPaired,
     )..addListener(_onSessionChanged);
+    _lanDiscovery = LanDiscoveryService(
+      onConnection: (socket, identifier) =>
+          _session.acceptLanConnection(socket, identifier),
+    );
+    _lanDevicesSubscription = _lanDiscovery.devices.listen((devices) {
+      if (!mounted) return;
+      setState(() {
+        _lanDevices = {for (final device in devices) device.identifier: device};
+      });
+    });
     _timer = Timer.periodic(const Duration(seconds: 1), _tick);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _startPresence();
       _startHosting();
+      _startLanDiscovery();
       _refreshPresence();
     });
   }
@@ -57,6 +72,11 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     if (state != AppLifecycleState.resumed) return;
     _session.ensureHosting();
     unawaited(_startPresence());
+    if (!_session.isLanConnection) {
+      unawaited(
+        _lanDiscovery.ensureStarted(identifier: widget.settings.identifier),
+      );
+    }
   }
 
   void _tick(Timer timer) {
@@ -85,17 +105,41 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     );
   }
 
+  Future<void> _startLanDiscovery() async {
+    try {
+      await _lanDiscovery.start(identifier: widget.settings.identifier);
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('局域网设备发现启动失败：$error')));
+      }
+    }
+  }
+
   Future<void> _joinPeer() async {
     if (_session.status == PeerStatus.connecting) return;
     FocusManager.instance.primaryFocus?.unfocus();
+    final identifier = _targetIdentifier.text.trim();
+    final lanDevice = _lanDevices[identifier];
     try {
-      await _session.join(
-        signalingUrl: widget.settings.signalingUrl,
-        identifier: _targetIdentifier.text.trim(),
-        totpCode: _targetCode.text.trim(),
-        localIdentifier: widget.settings.identifier,
-        localHostToken: widget.settings.hostToken,
-      );
+      if (lanDevice != null) {
+        await _session.joinLan(
+          address: lanDevice.address,
+          port: lanDevice.port,
+          identifier: identifier,
+          totpCode: _targetCode.text.trim(),
+          localIdentifier: widget.settings.identifier,
+        );
+      } else {
+        await _session.join(
+          signalingUrl: widget.settings.signalingUrl,
+          identifier: identifier,
+          totpCode: _targetCode.text.trim(),
+          localIdentifier: widget.settings.identifier,
+          localHostToken: widget.settings.hostToken,
+        );
+      }
     } catch (_) {}
   }
 
@@ -111,7 +155,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
   void _onSessionChanged() {
     if (mounted) setState(() {});
-    if (_session.isPeer &&
+    if ((_session.isPeer || _session.isLanConnection) &&
         (_session.status == PeerStatus.disconnected ||
             _session.status == PeerStatus.error)) {
       unawaited(_restoreHosting(errorMessage: _session.errorMessage));
@@ -124,9 +168,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     try {
       await _startHosting();
       if (mounted && errorMessage != null && errorMessage.isNotEmpty) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(errorMessage)),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(errorMessage)));
       }
     } finally {
       _restoringHosting = false;
@@ -162,6 +206,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     _targetIdentifier.dispose();
     _targetCode.dispose();
     _targetCodeFocus.dispose();
+    _lanDevicesSubscription?.cancel();
+    _lanDiscovery.dispose();
     _session
       ..removeListener(_onSessionChanged)
       ..dispose();
@@ -240,7 +286,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   );
 
   Widget _buildPairedDevices(BuildContext context) {
-    final devices = widget.settings.pairedDevices;
+    final pairedDevices = widget.settings.pairedDevices.toSet();
+    final devices = {...pairedDevices, ..._lanDevices.keys}.toList()..sort();
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -250,7 +297,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
             children: [
               Expanded(
                 child: Text(
-                  '已配对设备',
+                  '设备列表',
                   style: Theme.of(context).textTheme.titleMedium,
                 ),
               ),
@@ -267,14 +314,17 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
           child: devices.isEmpty
               ? const Padding(
                   padding: EdgeInsets.all(20),
-                  child: Text('暂无设备\n完成一次 TOTP 验证后会自动加入列表。'),
+                  child: Text('暂无设备\n局域网设备会自动发现，公网设备在完成 TOTP 验证后加入。'),
                 )
               : ListView.builder(
                   padding: const EdgeInsets.symmetric(vertical: 8),
                   itemCount: devices.length,
                   itemBuilder: (context, index) {
                     final identifier = devices[index];
+                    final lanDevice = _lanDevices[identifier];
+                    final isLan = lanDevice != null;
                     final online =
+                        isLan ||
                         (_onlineDevices[identifier] ?? false) ||
                         (_session.isConnected &&
                             _session.remoteIdentifier == identifier);
@@ -286,8 +336,11 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                         leading: Badge(
                           backgroundColor: online ? Colors.green : Colors.grey,
                           smallSize: 10,
-                          child: const CircleAvatar(
-                            child: Icon(Icons.devices_other, size: 20),
+                          child: CircleAvatar(
+                            child: Icon(
+                              isLan ? Icons.lan_outlined : Icons.public,
+                              size: 20,
+                            ),
                           ),
                         ),
                         title: Text(
@@ -295,17 +348,25 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                         ),
-                        subtitle: Text(online ? '在线 · 双击验证' : '离线'),
-                        trailing: IconButton(
-                          tooltip: '移除',
-                          onPressed: () async {
-                            await widget.settings.removePairedDevice(
-                              identifier,
-                            );
-                            await _refreshPresence();
-                          },
-                          icon: const Icon(Icons.close, size: 18),
+                        subtitle: Text(
+                          isLan
+                              ? '在线 · 双击验证'
+                              : online
+                              ? '在线 · 双击验证'
+                              : '离线',
                         ),
+                        trailing: pairedDevices.contains(identifier)
+                            ? IconButton(
+                                tooltip: '移除',
+                                onPressed: () async {
+                                  await widget.settings.removePairedDevice(
+                                    identifier,
+                                  );
+                                  await _refreshPresence();
+                                },
+                                icon: const Icon(Icons.close, size: 18),
+                              )
+                            : null,
                       ),
                     );
                   },
@@ -658,6 +719,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     )..addListener(_onSessionChanged);
     await _startPresence();
     await _startHosting();
+    await _startLanDiscovery();
     await _refreshPresence();
   }
 }

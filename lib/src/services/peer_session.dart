@@ -70,6 +70,8 @@ class PeerSession extends ChangeNotifier {
   RTCPeerConnection? _peerConnection;
   RTCDataChannel? _dataChannel;
   StreamSubscription<void>? _signalSubscription;
+  WebSocket? _lanSignalSocket;
+  StreamSubscription<dynamic>? _lanSignalSubscription;
   _IncomingFile? _incoming;
   SignalingRole? _role;
   String? _targetIdentifier;
@@ -77,6 +79,7 @@ class PeerSession extends ChangeNotifier {
   final Map<String, Completer<void>> _outgoingAcknowledgements = {};
   final Map<String, Completer<void>> _outgoingBatchAcknowledgements = {};
   Future<void> _incomingMessageQueue = Future<void>.value();
+  Future<void> _lanSignalMessageQueue = Future<void>.value();
   Timer? _connectionTimeout;
   Timer? _hostReconnectTimer;
   String? _hostSignalingUrl;
@@ -90,6 +93,11 @@ class PeerSession extends ChangeNotifier {
   String? _incomingBatchId;
   bool _incomingBatchFailed = false;
   String? _lastRemoteOfferSdp;
+  bool _usingLan = false;
+  bool _lanAuthenticated = false;
+  bool _lanAuthSent = false;
+  String? _lanTotpCode;
+  String? _localIdentifier;
 
   PeerStatus status = PeerStatus.idle;
   String? errorMessage;
@@ -102,6 +110,7 @@ class PeerSession extends ChangeNotifier {
       _dataChannel?.state == RTCDataChannelState.RTCDataChannelOpen;
   bool get isConnected => status == PeerStatus.connected && _isDataChannelOpen;
   bool get isPeer => _role == SignalingRole.peer;
+  bool get isLanConnection => _usingLan;
   String? get remoteIdentifier => _targetIdentifier;
 
   Future<void> host({
@@ -191,6 +200,91 @@ class PeerSession extends ChangeNotifier {
     }
   }
 
+  Future<void> joinLan({
+    required String address,
+    required int port,
+    required String identifier,
+    required String totpCode,
+    required String localIdentifier,
+  }) async {
+    await disconnect();
+    _role = SignalingRole.peer;
+    _usingLan = true;
+    _targetIdentifier = identifier;
+    _localIdentifier = localIdentifier;
+    _lanTotpCode = totpCode;
+    _setStatus(PeerStatus.connecting);
+    try {
+      final socket = await WebSocket.connect(
+        Uri(
+          scheme: 'ws',
+          host: address,
+          port: port,
+          path: '/signal',
+          queryParameters: {
+            'identifier': localIdentifier,
+            'target': identifier,
+          },
+        ).toString(),
+      ).timeout(const Duration(seconds: 8));
+      _attachLanSignalSocket(socket);
+    } catch (error) {
+      _fail('局域网直连失败：$error');
+      rethrow;
+    }
+  }
+
+  Future<bool> acceptLanConnection(
+    WebSocket socket,
+    String peerIdentifier,
+  ) async {
+    if (isConnected || status == PeerStatus.connecting) return false;
+    await disconnect();
+    _role = SignalingRole.host;
+    _usingLan = true;
+    _targetIdentifier = peerIdentifier;
+    _attachLanSignalSocket(socket);
+    _setStatus(PeerStatus.connecting);
+    try {
+      await _createOffer();
+      return true;
+    } catch (error) {
+      _fail('局域网协商失败：$error');
+      return false;
+    }
+  }
+
+  void _attachLanSignalSocket(WebSocket socket) {
+    _lanSignalSocket = socket;
+    _lanSignalSubscription = socket.listen(
+      (data) {
+        if (data is! String) return;
+        try {
+          final message = jsonDecode(data);
+          if (message is Map<String, dynamic>) {
+            _lanSignalMessageQueue = _lanSignalMessageQueue
+                .then((_) => _handleSignal(message))
+                .onError((Object error, StackTrace stackTrace) {
+                  _fail('处理局域网信令失败：$error');
+                });
+          }
+        } catch (_) {
+          _fail('局域网信令消息格式错误');
+        }
+      },
+      onError: (Object error) {
+        if (!isConnected) _fail('局域网信令连接错误：$error');
+      },
+      onDone: () {
+        if (identical(_lanSignalSocket, socket)) _lanSignalSocket = null;
+        if (!isConnected && status != PeerStatus.idle) {
+          _fail('局域网信令连接已断开');
+        }
+      },
+      cancelOnError: true,
+    );
+  }
+
   Future<void> _listenToSignals() async {
     await _signalSubscription?.cancel();
     _signalSubscription = _signaling.messages
@@ -210,7 +304,7 @@ class PeerSession extends ChangeNotifier {
             totpSecret,
             message['totp'] as String? ?? '',
           );
-          _signaling.send({'type': 'auth_result', 'ok': valid});
+          _sendSignal({'type': 'auth_result', 'ok': valid});
           if (valid) {
             final peerIdentifier = message['peerIdentifier'] as String?;
             if (peerIdentifier != null && peerIdentifier.isNotEmpty) {
@@ -242,7 +336,7 @@ class PeerSession extends ChangeNotifier {
           final answer = await _peerConnection!.createAnswer();
           await _peerConnection!.setLocalDescription(answer);
           _lastRemoteOfferSdp = sdp;
-          _signaling.send({'type': 'answer', 'sdp': answer.sdp});
+          _sendSignal({'type': 'answer', 'sdp': answer.sdp});
           break;
         case 'answer':
           if (!_hasPendingOffer || _peerConnection == null) return;
@@ -298,7 +392,7 @@ class PeerSession extends ChangeNotifier {
       );
       final offer = await _peerConnection!.createOffer();
       await _peerConnection!.setLocalDescription(offer);
-      _signaling.send({'type': 'offer', 'sdp': offer.sdp});
+      _sendSignal({'type': 'offer', 'sdp': offer.sdp});
     } catch (_) {
       _hasPendingOffer = false;
       rethrow;
@@ -334,7 +428,7 @@ class PeerSession extends ChangeNotifier {
     _peerConnection = connection;
     connection.onIceCandidate = (candidate) {
       if (candidate.candidate == null) return;
-      _signaling.send({
+      _sendSignal({
         'type': 'candidate',
         'candidate': candidate.candidate,
         'sdpMid': candidate.sdpMid,
@@ -372,6 +466,23 @@ class PeerSession extends ChangeNotifier {
 
   void _markDataChannelReady() {
     if (!_isDataChannelOpen) return;
+    if (_usingLan && !_lanAuthenticated) {
+      if (_role == SignalingRole.peer && !_lanAuthSent) {
+        _lanAuthSent = true;
+        unawaited(
+          _sendJson({
+            'type': 'lan_auth',
+            'totp': _lanTotpCode,
+            'peerIdentifier': _localIdentifier,
+          }),
+        );
+      }
+      return;
+    }
+    _finishDataChannelReady();
+  }
+
+  void _finishDataChannelReady() {
     _setStatus(PeerStatus.connected);
     if (_initialDirectoryRequested) return;
     _initialDirectoryRequested = true;
@@ -392,6 +503,10 @@ class PeerSession extends ChangeNotifier {
       return;
     }
     final data = jsonDecode(message.text) as Map<String, dynamic>;
+    if (_usingLan && !_lanAuthenticated) {
+      await _handleLanAuthentication(data);
+      return;
+    }
     switch (data['type']) {
       case 'list_request':
         await _sendDirectoryListing(
@@ -495,6 +610,52 @@ class PeerSession extends ChangeNotifier {
         _markFailed(data['id'] as String, data['message'] as String);
         break;
     }
+  }
+
+  Future<void> _handleLanAuthentication(Map<String, dynamic> data) async {
+    switch (data['type']) {
+      case 'lan_auth':
+        if (_role != SignalingRole.host) return;
+        final valid = TotpService.verify(
+          totpSecret,
+          data['totp'] as String? ?? '',
+        );
+        await _sendJson({'type': 'lan_auth_result', 'ok': valid});
+        if (!valid) {
+          _fail('唯一标识或 TOTP 安全码不正确');
+          return;
+        }
+        _lanAuthenticated = true;
+        final peerIdentifier = _targetIdentifier;
+        if (peerIdentifier != null) onPaired?.call(peerIdentifier);
+        _finishDataChannelReady();
+        return;
+      case 'lan_auth_result':
+        if (_role != SignalingRole.peer) return;
+        if (data['ok'] != true) {
+          _fail('唯一标识或 TOTP 安全码不正确');
+          return;
+        }
+        _lanAuthenticated = true;
+        final target = _targetIdentifier;
+        if (target != null) onPaired?.call(target);
+        _finishDataChannelReady();
+        return;
+      default:
+        _fail('局域网连接尚未通过 TOTP 验证');
+    }
+  }
+
+  void _sendSignal(Map<String, dynamic> message) {
+    if (_usingLan) {
+      final socket = _lanSignalSocket;
+      if (socket == null || socket.readyState != WebSocket.open) {
+        throw StateError('局域网信令连接尚未建立');
+      }
+      socket.add(jsonEncode(message));
+      return;
+    }
+    _signaling.send(message);
   }
 
   Future<void> _sendRequestedPath(
@@ -1152,6 +1313,16 @@ class PeerSession extends ChangeNotifier {
     await _signalSubscription?.cancel();
     _signalSubscription = null;
     await _signaling.close();
+    await _lanSignalSubscription?.cancel();
+    _lanSignalSubscription = null;
+    await _lanSignalSocket?.close();
+    _lanSignalSocket = null;
+    _usingLan = false;
+    _lanAuthenticated = false;
+    _lanAuthSent = false;
+    _lanTotpCode = null;
+    _localIdentifier = null;
+    _lanSignalMessageQueue = Future<void>.value();
     status = PeerStatus.idle;
     _targetIdentifier = null;
     remoteEntries = const [];

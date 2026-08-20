@@ -2,6 +2,8 @@ package dev.rtctransfer.rtc_transfer
 
 import android.app.Activity
 import android.content.Intent
+import android.content.Context
+import android.net.wifi.WifiManager
 import android.net.Uri
 import androidx.documentfile.provider.DocumentFile
 import io.flutter.embedding.android.FlutterActivity
@@ -22,12 +24,21 @@ class MainActivity : FlutterActivity() {
     private val storageExecutor = Executors.newSingleThreadExecutor()
     private val outputStreams = mutableMapOf<String, OutputStream>()
     private val inputStreams = mutableMapOf<String, InputStream>()
+    private var multicastLock: WifiManager.MulticastLock? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL)
             .setMethodCallHandler { call, result ->
                 when (call.method) {
+                    "acquireMulticastLock" -> {
+                        acquireMulticastLock()
+                        result.success(null)
+                    }
+                    "releaseMulticastLock" -> {
+                        releaseMulticastLock()
+                        result.success(null)
+                    }
                     "pickDirectory" -> pickDirectory(result)
                     "openFile" -> runStorageOperation(result) {
                         openFile(
@@ -92,6 +103,20 @@ class MainActivity : FlutterActivity() {
                     else -> result.notImplemented()
                 }
             }
+    }
+
+    private fun acquireMulticastLock() {
+        if (multicastLock?.isHeld == true) return
+        val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+        multicastLock = wifiManager.createMulticastLock("rtc-transfer-discovery").apply {
+            setReferenceCounted(false)
+            acquire()
+        }
+    }
+
+    private fun releaseMulticastLock() {
+        multicastLock?.let { if (it.isHeld) it.release() }
+        multicastLock = null
     }
 
     private fun pickDirectory(result: MethodChannel.Result) {
@@ -260,6 +285,7 @@ class MainActivity : FlutterActivity() {
     }
 
     override fun onDestroy() {
+        releaseMulticastLock()
         outputStreams.values.forEach {
             try {
                 it.close()
