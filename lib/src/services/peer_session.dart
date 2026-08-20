@@ -77,6 +77,7 @@ class PeerSession extends ChangeNotifier {
   String? _targetIdentifier;
   final List<RTCIceCandidate> _pendingRemoteCandidates = [];
   final Map<String, Completer<void>> _outgoingAcknowledgements = {};
+  final Map<String, Completer<void>> _outgoingDirectoryAcknowledgements = {};
   final Map<String, Completer<void>> _outgoingBatchAcknowledgements = {};
   Future<void> _incomingMessageQueue = Future<void>.value();
   Future<void> _lanSignalMessageQueue = Future<void>.value();
@@ -620,8 +621,31 @@ class PeerSession extends ChangeNotifier {
           );
         }
         break;
+      case 'batch_abort':
+        final overview = transferOverview;
+        if (overview != null && overview.id == data['id']) {
+          overview
+            ..state = TransferState.failed
+            ..error = data['message'] as String? ?? '目录传输已中止'
+            ..stopwatch.stop();
+          _incomingBatchFailed = true;
+          notifyListeners();
+        }
+        break;
       case 'directory_create':
-        await _createIncomingDirectory(data['path'] as String);
+        await _createIncomingDirectory(data);
+        break;
+      case 'directory_ack':
+        final id = data['id'] as String;
+        final acknowledgement = _outgoingDirectoryAcknowledgements.remove(id);
+        if (acknowledgement == null || acknowledgement.isCompleted) break;
+        if (data['ok'] == true) {
+          acknowledgement.complete();
+        } else {
+          acknowledgement.completeError(
+            StateError(data['message'] as String? ?? '接收端目录创建失败'),
+          );
+        }
         break;
       case 'transfer_start':
         await _startIncoming(data);
@@ -946,6 +970,13 @@ class PeerSession extends ChangeNotifier {
       notifyListeners();
     } catch (error) {
       _outgoingBatchAcknowledgements.remove(batchId);
+      try {
+        await _sendJson({
+          'type': 'batch_abort',
+          'id': batchId,
+          'message': '$error',
+        });
+      } catch (_) {}
       overview
         ..state = TransferState.failed
         ..error = '$error'
@@ -1021,8 +1052,22 @@ class PeerSession extends ChangeNotifier {
           p.posix.relative(path, from: selected),
         );
 
-  Future<void> _sendDirectory(String destinationPath) =>
-      _sendJson({'type': 'directory_create', 'path': destinationPath});
+  Future<void> _sendDirectory(String destinationPath) async {
+    final id = _randomId();
+    final acknowledgement = Completer<void>();
+    acknowledgement.future.ignore();
+    _outgoingDirectoryAcknowledgements[id] = acknowledgement;
+    try {
+      await _sendJson({
+        'type': 'directory_create',
+        'id': id,
+        'path': destinationPath,
+      });
+      await acknowledgement.future.timeout(const Duration(seconds: 15));
+    } finally {
+      _outgoingDirectoryAcknowledgements.remove(id);
+    }
+  }
 
   Future<void> _sendDirectoryContents(
     Directory directory,
@@ -1275,13 +1320,15 @@ class PeerSession extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> _createIncomingDirectory(String path) async {
-    final relativePath = _sanitizeRelative(path);
+  Future<void> _createIncomingDirectory(Map<String, dynamic> data) async {
+    final id = data['id'] as String;
+    final relativePath = _sanitizeRelative(data['path'] as String);
     try {
       await ReceiveStorage.createDirectory(
         relativePath: relativePath,
         configuredDirectory: receiveDirectory,
       );
+      await _sendJson({'type': 'directory_ack', 'id': id, 'ok': true});
     } catch (error) {
       final message = '无法创建接收目录：$error';
       _incomingBatchFailed = true;
@@ -1290,6 +1337,12 @@ class PeerSession extends ChangeNotifier {
         ..error = message
         ..stopwatch.stop();
       notifyListeners();
+      await _sendJson({
+        'type': 'directory_ack',
+        'id': id,
+        'ok': false,
+        'message': message,
+      });
     }
   }
 
@@ -1497,6 +1550,12 @@ class PeerSession extends ChangeNotifier {
       }
     }
     _outgoingAcknowledgements.clear();
+    for (final acknowledgement in _outgoingDirectoryAcknowledgements.values) {
+      if (!acknowledgement.isCompleted) {
+        acknowledgement.completeError(StateError('连接已断开'));
+      }
+    }
+    _outgoingDirectoryAcknowledgements.clear();
     for (final acknowledgement in _outgoingBatchAcknowledgements.values) {
       if (!acknowledgement.isCompleted) {
         acknowledgement.completeError(StateError('连接已断开'));
