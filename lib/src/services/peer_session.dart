@@ -52,7 +52,7 @@ class PeerSession extends ChangeNotifier {
   });
 
   static const _chunkSize = 32 * 1024;
-  static const _maxBufferedBytes = 4 * 1024 * 1024;
+  static const _maxBufferedBytes = 1024 * 1024;
   static const _connectionTimeoutDuration = Duration(seconds: 30);
   static const _iceServers = [
     {'urls': 'stun:stun.cloudflare.com:3478'},
@@ -90,12 +90,12 @@ class PeerSession extends ChangeNotifier {
   bool _hasPendingOffer = false;
   bool _initialDirectoryRequested = false;
   String? _outgoingBatchId;
-  String? _incomingBatchId;
   bool _incomingBatchFailed = false;
   String? _lastRemoteOfferSdp;
   bool _usingLan = false;
   bool _lanAuthenticated = false;
   bool _lanAuthSent = false;
+  bool _outgoingTransferActive = false;
   String? _lanTotpCode;
   String? _localIdentifier;
 
@@ -229,7 +229,7 @@ class PeerSession extends ChangeNotifier {
       ).timeout(const Duration(seconds: 8));
       _attachLanSignalSocket(socket);
     } catch (error) {
-      _fail('局域网直连失败：$error');
+      _fail('局域网直连 $address:$port 失败：$error');
       rethrow;
     }
   }
@@ -545,7 +545,6 @@ class PeerSession extends ChangeNotifier {
         );
         break;
       case 'batch_start':
-        _incomingBatchId = data['id'] as String;
         _incomingBatchFailed = false;
         transferOverview = TransferOverview(
           id: data['id'] as String,
@@ -573,7 +572,6 @@ class PeerSession extends ChangeNotifier {
           'ok': succeeded,
           if (!succeeded) 'message': overview?.error ?? '目录传输失败',
         });
-        _incomingBatchId = null;
         _incomingBatchFailed = false;
         break;
       case 'batch_ack':
@@ -814,6 +812,28 @@ class PeerSession extends ChangeNotifier {
     String? displayName,
     int? totalBytes,
   }) async {
+    if (_outgoingTransferActive) {
+      throw StateError('已有传输任务正在进行');
+    }
+    _outgoingTransferActive = true;
+    try {
+      await _sendRelativePathExclusive(
+        relativePath,
+        destinationDirectory: destinationDirectory,
+        displayName: displayName,
+        totalBytes: totalBytes,
+      );
+    } finally {
+      _outgoingTransferActive = false;
+    }
+  }
+
+  Future<void> _sendRelativePathExclusive(
+    String relativePath, {
+    required String destinationDirectory,
+    String? displayName,
+    int? totalBytes,
+  }) async {
     final resolvedTotalBytes = totalBytes != null && totalBytes > 0
         ? totalBytes
         : await _relativePathSize(relativePath);
@@ -826,6 +846,10 @@ class PeerSession extends ChangeNotifier {
     );
     transferOverview = overview;
     final batchAcknowledgement = Completer<void>();
+    // The connection can close while files are still being streamed and
+    // before this future is awaited. Keep an error handler attached so a
+    // disconnect never becomes an unhandled asynchronous exception.
+    batchAcknowledgement.future.ignore();
     _outgoingBatchAcknowledgements[batchId] = batchAcknowledgement;
     _outgoingBatchId = batchId;
     notifyListeners();
@@ -983,11 +1007,9 @@ class PeerSession extends ChangeNotifier {
     if (overview != null && overview.direction == TransferDirection.sending) {
       overview.currentFile = destinationPath;
     }
-    final isStreamingBatch = _outgoingBatchId != null;
-    final acknowledgement = isStreamingBatch ? null : Completer<void>();
-    if (acknowledgement != null) {
-      _outgoingAcknowledgements[id] = acknowledgement;
-    }
+    final acknowledgement = Completer<void>();
+    acknowledgement.future.ignore();
+    _outgoingAcknowledgements[id] = acknowledgement;
     notifyListeners();
     await _sendJson({
       'type': 'transfer_start',
@@ -996,22 +1018,32 @@ class PeerSession extends ChangeNotifier {
       'size': size,
     });
     final stopwatch = Stopwatch()..start();
+    var enqueuedBytes = 0;
     var lastBytes = 0;
     var lastSample = 0;
+    var chunksSinceBufferPoll = 0;
+    final overviewBase = overview?.transferredBytes ?? 0;
     try {
       while (true) {
         final chunk = await readChunk();
         if (chunk.isEmpty) break;
-        while ((channel.bufferedAmount ?? 0) > _maxBufferedBytes) {
-          await Future<void>.delayed(const Duration(milliseconds: 15));
-        }
         await channel.send(RTCDataChannelMessage.fromBinary(chunk));
-        task.transferredBytes += chunk.length;
-        if (overview != null &&
-            overview.direction == TransferDirection.sending) {
-          overview.transferredBytes += chunk.length;
-        }
+        enqueuedBytes += chunk.length;
+        chunksSinceBufferPoll++;
         final now = stopwatch.elapsedMilliseconds;
+        if (chunksSinceBufferPoll >= 8 || now - lastSample >= 250) {
+          final buffered = await _waitForDataChannelCapacity(channel);
+          chunksSinceBufferPoll = 0;
+          final delivered = (enqueuedBytes - buffered).clamp(0, size);
+          task.transferredBytes = max(task.transferredBytes, delivered);
+          if (overview != null &&
+              overview.direction == TransferDirection.sending) {
+            overview.transferredBytes = max(
+              overview.transferredBytes,
+              overviewBase + task.transferredBytes,
+            );
+          }
+        }
         if (now - lastSample >= 250) {
           task.bytesPerSecond =
               (task.transferredBytes - lastBytes) * 1000 / (now - lastSample);
@@ -1020,10 +1052,16 @@ class PeerSession extends ChangeNotifier {
           notifyListeners();
         }
       }
-      await _sendJson({'type': 'transfer_end', 'id': id});
-      if (acknowledgement != null) {
-        await acknowledgement.future.timeout(const Duration(minutes: 5));
+      await _waitForDataChannelDrain(channel);
+      task.transferredBytes = size;
+      if (overview != null && overview.direction == TransferDirection.sending) {
+        overview.transferredBytes = max(
+          overview.transferredBytes,
+          overviewBase + size,
+        );
       }
+      await _sendJson({'type': 'transfer_end', 'id': id});
+      await acknowledgement.future.timeout(const Duration(minutes: 5));
       task
         ..state = TransferState.complete
         ..bytesPerSecond = size * 1000 / max(1, stopwatch.elapsedMilliseconds);
@@ -1033,13 +1071,39 @@ class PeerSession extends ChangeNotifier {
       task
         ..state = TransferState.failed
         ..error = error.toString();
-      await _sendJson({
-        'type': 'transfer_error',
-        'id': id,
-        'message': '$error',
-      });
+      try {
+        await _sendJson({
+          'type': 'transfer_error',
+          'id': id,
+          'message': '$error',
+        });
+      } catch (_) {
+        // Preserve the original transfer error when the channel has already
+        // closed; attempting to report it must not create another exception.
+      }
       notifyListeners();
       rethrow;
+    }
+  }
+
+  Future<int> _waitForDataChannelCapacity(RTCDataChannel channel) async {
+    var buffered = await channel.getBufferedAmount();
+    while (buffered > _maxBufferedBytes) {
+      if (channel.state != RTCDataChannelState.RTCDataChannelOpen) {
+        throw StateError('数据通道已断开');
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 15));
+      buffered = await channel.getBufferedAmount();
+    }
+    return buffered;
+  }
+
+  Future<void> _waitForDataChannelDrain(RTCDataChannel channel) async {
+    while (await channel.getBufferedAmount() > 0) {
+      if (channel.state != RTCDataChannelState.RTCDataChannelOpen) {
+        throw StateError('数据通道已断开');
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 15));
     }
   }
 
@@ -1137,14 +1201,12 @@ class PeerSession extends ChangeNotifier {
       _incomingBatchFailed = true;
       _incoming = null;
       notifyListeners();
-      if (_incomingBatchId == null) {
-        await _sendJson({
-          'type': 'transfer_ack',
-          'id': id,
-          'ok': false,
-          'message': message,
-        });
-      }
+      await _sendJson({
+        'type': 'transfer_ack',
+        'id': id,
+        'ok': false,
+        'message': message,
+      });
       return;
     }
     incoming.task
@@ -1160,9 +1222,7 @@ class PeerSession extends ChangeNotifier {
         ..stopwatch.stop();
     }
     notifyListeners();
-    if (_incomingBatchId == null) {
-      await _sendJson({'type': 'transfer_ack', 'id': id, 'ok': true});
-    }
+    await _sendJson({'type': 'transfer_ack', 'id': id, 'ok': true});
   }
 
   FileSystemEntity? _safeEntity(
@@ -1343,7 +1403,7 @@ class PeerSession extends ChangeNotifier {
     _initialDirectoryRequested = false;
     _lastRemoteOfferSdp = null;
     _outgoingBatchId = null;
-    _incomingBatchId = null;
+    _outgoingTransferActive = false;
     _incomingBatchFailed = false;
     transferOverview = null;
     remoteEntries = const [];

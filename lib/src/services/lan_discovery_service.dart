@@ -172,6 +172,16 @@ class LanDiscoveryService {
           continue;
         }
         final previous = _devices[identifier];
+        // One process announces on every IPv4 interface. A VM can therefore
+        // receive several announcements for the same device (Wi-Fi, VPN,
+        // libvirt, Tailscale). Keep the first fresh route instead of letting
+        // the last, often unreachable virtual-interface address overwrite it.
+        if (previous != null &&
+            previous.address != datagram.address.address &&
+            DateTime.now().difference(previous.lastSeen) <
+                const Duration(seconds: 12)) {
+          continue;
+        }
         final device = LanDevice(
           identifier: identifier,
           address: datagram.address.address,
