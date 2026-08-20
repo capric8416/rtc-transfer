@@ -780,6 +780,7 @@ class _TransferWorkspaceState extends State<_TransferWorkspace> {
   String _remoteSharedPath = '';
   String _remoteReceivePath = '';
   List<FileEntry> _localEntries = const [];
+  String _localDisplayPath = '';
   String? _localError;
   bool _localLoading = true;
   bool _remoteLoading = true;
@@ -848,9 +849,14 @@ class _TransferWorkspaceState extends State<_TransferWorkspace> {
     });
     try {
       final entries = await widget.session.listLocalDirectory(path, kind: kind);
+      final displayPath = await widget.session.localDirectoryDisplayPath(
+        path,
+        kind: kind,
+      );
       if (!mounted || kind != _localKind || path != _localPath) return;
       setState(() {
         _localEntries = entries;
+        _localDisplayPath = displayPath;
         _localLoading = false;
       });
     } catch (error) {
@@ -940,7 +946,7 @@ class _TransferWorkspaceState extends State<_TransferWorkspace> {
         : null;
     final localPane = _FilePane(
       title: _mode == _TransferMode.send ? '本端共享目录' : '本端接收目录',
-      path: _localPath,
+      path: _localDisplayPath,
       entries: _localEntries,
       loading: _localLoading,
       error: _localError,
@@ -958,7 +964,9 @@ class _TransferWorkspaceState extends State<_TransferWorkspace> {
     );
     final remotePane = _FilePane(
       title: _mode == _TransferMode.send ? '对端接收目录' : '对端共享目录',
-      path: _remotePath,
+      path: remoteMatches
+          ? widget.session.remoteCurrentDisplayPath
+          : _remotePath,
       entries: remoteEntries,
       loading: _remoteLoading,
       error: remoteError,
@@ -985,6 +993,7 @@ class _TransferWorkspaceState extends State<_TransferWorkspace> {
                 child: SingleChildScrollView(
                   scrollDirection: Axis.horizontal,
                   child: SegmentedButton<_TransferMode>(
+                    showSelectedIcon: false,
                     segments: const [
                       ButtonSegment(
                         value: _TransferMode.send,
@@ -1110,7 +1119,7 @@ class _FilePane extends StatelessWidget {
               leading: Icon(isSource ? Icons.outbox_outlined : Icons.inbox),
               title: Text(title, maxLines: 1, overflow: TextOverflow.ellipsis),
               subtitle: Text(
-                path.isEmpty ? '/' : '/$path',
+                path.isEmpty ? '/' : path,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
               ),

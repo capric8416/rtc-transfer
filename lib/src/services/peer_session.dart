@@ -103,6 +103,7 @@ class PeerSession extends ChangeNotifier {
   String? errorMessage;
   List<FileEntry> remoteEntries = const [];
   String remoteCurrentPath = '';
+  String remoteCurrentDisplayPath = '';
   String? remoteBrowserError;
   PeerDirectoryKind remoteDirectoryKind = PeerDirectoryKind.shared;
 
@@ -517,6 +518,9 @@ class PeerSession extends ChangeNotifier {
       case 'list_response':
         remoteBrowserError = null;
         remoteCurrentPath = data['path'] as String? ?? '';
+        remoteCurrentDisplayPath =
+            data['displayPath'] as String? ??
+            (remoteCurrentPath.isEmpty ? '/' : '/$remoteCurrentPath');
         remoteDirectoryKind = _directoryKindFromWire(data['root']);
         remoteEntries = (data['entries'] as List<dynamic>)
             .map((item) => FileEntry.fromJson(item as Map<String, dynamic>))
@@ -526,6 +530,8 @@ class PeerSession extends ChangeNotifier {
       case 'error':
         remoteDirectoryKind = _directoryKindFromWire(data['root']);
         remoteCurrentPath = data['path'] as String? ?? remoteCurrentPath;
+        remoteCurrentDisplayPath =
+            data['displayPath'] as String? ?? remoteCurrentDisplayPath;
         remoteBrowserError = data['message'] as String? ?? '远端目录读取失败';
         remoteEntries = const [];
         notifyListeners();
@@ -585,6 +591,9 @@ class PeerSession extends ChangeNotifier {
             StateError(data['message'] as String? ?? '目录接收失败'),
           );
         }
+        break;
+      case 'directory_create':
+        await _createIncomingDirectory(data['path'] as String);
         break;
       case 'transfer_start':
         await _startIncoming(data);
@@ -685,9 +694,7 @@ class PeerSession extends ChangeNotifier {
     String relativePath, {
     PeerDirectoryKind kind = PeerDirectoryKind.shared,
   }) async {
-    final rootValue = kind == PeerDirectoryKind.shared
-        ? sharedRoot
-        : await ReceiveStorage.resolveReceiveDirectory(receiveDirectory);
+    final rootValue = await _directoryRoot(kind);
     if (ReceiveStorage.isAndroidSafDirectory(rootValue)) {
       final entries = (await ReceiveStorage.listSharedDirectory(
         treeUri: rootValue!,
@@ -734,10 +741,15 @@ class PeerSession extends ChangeNotifier {
   }) async {
     try {
       final entries = await listLocalDirectory(relativePath, kind: kind);
+      final displayPath = await localDirectoryDisplayPath(
+        relativePath,
+        kind: kind,
+      );
       await _sendJson({
         'type': 'list_response',
         'root': kind.name,
         'path': relativePath,
+        'displayPath': displayPath,
         'entries': entries.map((entry) => entry.toJson()).toList(),
       });
     } catch (error) {
@@ -745,11 +757,30 @@ class PeerSession extends ChangeNotifier {
         'type': 'error',
         'root': kind.name,
         'path': relativePath,
+        'displayPath': await localDirectoryDisplayPath(
+          relativePath,
+          kind: kind,
+        ),
         'message': kind == PeerDirectoryKind.shared
             ? '无法读取共享目录：$error'
             : '无法读取接收目录：$error',
       });
     }
+  }
+
+  Future<String?> _directoryRoot(PeerDirectoryKind kind) async =>
+      kind == PeerDirectoryKind.shared
+      ? sharedRoot
+      : ReceiveStorage.resolveReceiveDirectory(receiveDirectory);
+
+  Future<String> localDirectoryDisplayPath(
+    String relativePath, {
+    required PeerDirectoryKind kind,
+  }) async {
+    final root = await _directoryRoot(kind);
+    if (root == null || root.isEmpty) return '未设置';
+    if (relativePath.isEmpty) return root;
+    return p.join(root, relativePath);
   }
 
   void requestRemoteDirectory(
@@ -788,18 +819,19 @@ class PeerSession extends ChangeNotifier {
         await _sendFile(File(path), p.basename(path));
       } else if (type == FileSystemEntityType.directory) {
         final root = Directory(path);
+        await _sendDirectory(p.basename(root.path));
         await for (final entity in root.list(
           recursive: true,
           followLinks: false,
         )) {
-          if (entity is File) {
-            await _sendFile(
-              entity,
-              p.join(
-                p.basename(root.path),
-                p.relative(entity.path, from: root.path),
-              ),
-            );
+          final destinationPath = p.join(
+            p.basename(root.path),
+            p.relative(entity.path, from: root.path),
+          );
+          if (entity is Directory) {
+            await _sendDirectory(destinationPath);
+          } else if (entity is File) {
+            await _sendFile(entity, destinationPath);
           }
         }
       }
@@ -890,19 +922,29 @@ class PeerSession extends ChangeNotifier {
     required String destinationDirectory,
   }) async {
     if (ReceiveStorage.isAndroidSafDirectory(sharedRoot)) {
+      final directories = await ReceiveStorage.listSharedDirectoriesRecursive(
+        treeUri: sharedRoot!,
+        relativePath: relativePath,
+      );
       final files = await ReceiveStorage.listSharedFilesRecursive(
         treeUri: sharedRoot!,
         relativePath: relativePath,
       );
       final selected = _wirePath(relativePath);
+      for (final directory in directories) {
+        await _sendDirectory(
+          p.join(
+            destinationDirectory,
+            _relativeTransferDestination(selected, _wirePath(directory)),
+          ),
+        );
+      }
       for (final file in files) {
         final wireFile = _wirePath(file);
-        final relativeDestination = wireFile == selected
-            ? p.posix.basename(wireFile)
-            : p.posix.join(
-                p.posix.basename(selected),
-                p.posix.relative(wireFile, from: selected),
-              );
+        final relativeDestination = _relativeTransferDestination(
+          selected,
+          wireFile,
+        );
         await _sendSafFile(
           file,
           p.join(destinationDirectory, relativeDestination),
@@ -914,19 +956,22 @@ class PeerSession extends ChangeNotifier {
     if (entity == null) return;
     if (await FileSystemEntity.isDirectory(entity.path)) {
       final directory = Directory(entity.path);
+      await _sendDirectory(
+        p.join(destinationDirectory, p.basename(directory.path)),
+      );
       await for (final child in directory.list(
         recursive: true,
         followLinks: false,
       )) {
-        if (child is File) {
-          await _sendFile(
-            child,
-            p.join(
-              destinationDirectory,
-              p.basename(directory.path),
-              p.relative(child.path, from: directory.path),
-            ),
-          );
+        final destinationPath = p.join(
+          destinationDirectory,
+          p.basename(directory.path),
+          p.relative(child.path, from: directory.path),
+        );
+        if (child is Directory) {
+          await _sendDirectory(destinationPath);
+        } else if (child is File) {
+          await _sendFile(child, destinationPath);
         }
       }
     } else if (await FileSystemEntity.isFile(entity.path)) {
@@ -936,6 +981,17 @@ class PeerSession extends ChangeNotifier {
       );
     }
   }
+
+  static String _relativeTransferDestination(String selected, String path) =>
+      path == selected
+      ? p.posix.basename(path)
+      : p.posix.join(
+          p.posix.basename(selected),
+          p.posix.relative(path, from: selected),
+        );
+
+  Future<void> _sendDirectory(String destinationPath) =>
+      _sendJson({'type': 'directory_create', 'path': destinationPath});
 
   Future<int> _relativePathSize(String relativePath) async {
     if (ReceiveStorage.isAndroidSafDirectory(sharedRoot)) {
@@ -1168,6 +1224,24 @@ class PeerSession extends ChangeNotifier {
     notifyListeners();
   }
 
+  Future<void> _createIncomingDirectory(String path) async {
+    final relativePath = _sanitizeRelative(path);
+    try {
+      await ReceiveStorage.createDirectory(
+        relativePath: relativePath,
+        configuredDirectory: receiveDirectory,
+      );
+    } catch (error) {
+      final message = '无法创建接收目录：$error';
+      _incomingBatchFailed = true;
+      transferOverview
+        ?..state = TransferState.failed
+        ..error = message
+        ..stopwatch.stop();
+      notifyListeners();
+    }
+  }
+
   Future<void> _writeIncomingChunk(Uint8List bytes) async {
     final incoming = _incoming;
     if (incoming == null) return;
@@ -1387,6 +1461,7 @@ class PeerSession extends ChangeNotifier {
     _targetIdentifier = null;
     remoteEntries = const [];
     remoteCurrentPath = '';
+    remoteCurrentDisplayPath = '';
     remoteBrowserError = null;
     remoteDirectoryKind = PeerDirectoryKind.shared;
     notifyListeners();
@@ -1408,6 +1483,7 @@ class PeerSession extends ChangeNotifier {
     transferOverview = null;
     remoteEntries = const [];
     remoteCurrentPath = '';
+    remoteCurrentDisplayPath = '';
     remoteBrowserError = null;
     remoteDirectoryKind = PeerDirectoryKind.shared;
   }

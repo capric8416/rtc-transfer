@@ -74,6 +74,23 @@ class ReceiveStorage {
   static bool isAndroidSafDirectory(String? value) =>
       Platform.isAndroid && value != null && value.startsWith('content://');
 
+  static Future<void> createDirectory({
+    required String relativePath,
+    String? configuredDirectory,
+  }) async {
+    if (Platform.isAndroid &&
+        configuredDirectory != null &&
+        configuredDirectory.startsWith('content://')) {
+      await _channel.invokeMethod<void>('createDirectory', {
+        'treeUri': configuredDirectory,
+        'relativePath': relativePath,
+      });
+      return;
+    }
+    final root = await resolveReceiveDirectory(configuredDirectory);
+    await Directory(p.join(root, relativePath)).create(recursive: true);
+  }
+
   static Future<String> resolveReceiveDirectory(
     String? configuredDirectory,
   ) async {
@@ -107,6 +124,17 @@ class ReceiveStorage {
   }) async {
     final result = await _channel.invokeListMethod<String>(
       'listFilesRecursive',
+      {'treeUri': treeUri, 'relativePath': relativePath},
+    );
+    return result ?? const [];
+  }
+
+  static Future<List<String>> listSharedDirectoriesRecursive({
+    required String treeUri,
+    required String relativePath,
+  }) async {
+    final result = await _channel.invokeListMethod<String>(
+      'listDirectoriesRecursive',
       {'treeUri': treeUri, 'relativePath': relativePath},
     );
     return result ?? const [];

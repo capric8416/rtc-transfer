@@ -48,6 +48,13 @@ class MainActivity : FlutterActivity() {
                         )
                         null
                     }
+                    "createDirectory" -> runStorageOperation(result) {
+                        createDirectory(
+                            call.argument<String>("treeUri")!!,
+                            call.argument<String>("relativePath")!!,
+                        )
+                        null
+                    }
                     "writeFile" -> runStorageOperation(result) {
                         val transferId = call.argument<String>("transferId")!!
                         val bytes = call.argument<ByteArray>("bytes")!!
@@ -71,6 +78,12 @@ class MainActivity : FlutterActivity() {
                     }
                     "listFilesRecursive" -> runStorageOperation(result) {
                         listFilesRecursive(
+                            call.argument<String>("treeUri")!!,
+                            call.argument<String>("relativePath")!!,
+                        )
+                    }
+                    "listDirectoriesRecursive" -> runStorageOperation(result) {
+                        listDirectoriesRecursive(
                             call.argument<String>("treeUri")!!,
                             call.argument<String>("relativePath")!!,
                         )
@@ -185,6 +198,20 @@ class MainActivity : FlutterActivity() {
             ?: error("Cannot open receive file: $fileName")
     }
 
+    private fun createDirectory(treeUri: String, relativePath: String) {
+        var directory = DocumentFile.fromTreeUri(this, Uri.parse(treeUri))
+            ?: error("Cannot open receive directory")
+        for (segment in pathSegments(relativePath)) {
+            val existing = directory.findFile(segment)
+            directory = when {
+                existing?.isDirectory == true -> existing
+                existing != null -> error("A file blocks receive directory: $segment")
+                else -> directory.createDirectory(segment)
+                    ?: error("Cannot create receive directory: $segment")
+            }
+        }
+    }
+
     private fun closeFile(transferId: String) {
         outputStreams.remove(transferId)?.let {
             it.flush()
@@ -244,6 +271,24 @@ class MainActivity : FlutterActivity() {
         }
         collect(target, relativePath)
         return files
+    }
+
+    private fun listDirectoriesRecursive(treeUri: String, relativePath: String): List<String> {
+        val target = resolveDocument(treeUri, relativePath)
+        if (!target.isDirectory) return emptyList()
+        val directories = mutableListOf(relativePath)
+        fun collect(directory: DocumentFile, parent: String) {
+            directory.listFiles().forEach { child ->
+                val name = child.name ?: return@forEach
+                if (child.isDirectory) {
+                    val path = joinRelative(parent, name)
+                    directories.add(path)
+                    collect(child, path)
+                }
+            }
+        }
+        collect(target, relativePath)
+        return directories
     }
 
     private fun openReadFile(
