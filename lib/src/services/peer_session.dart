@@ -89,6 +89,7 @@ class PeerSession extends ChangeNotifier {
   bool _remoteDescriptionSet = false;
   bool _hasPendingOffer = false;
   bool _initialDirectoryRequested = false;
+  String? _pendingDirectoryRequestId;
   String? _outgoingBatchId;
   bool _incomingBatchFailed = false;
   String? _lastRemoteOfferSdp;
@@ -513,9 +514,16 @@ class PeerSession extends ChangeNotifier {
         await _sendDirectoryListing(
           data['path'] as String? ?? '',
           kind: _directoryKindFromWire(data['root']),
+          requestId: data['requestId'] as String?,
         );
         break;
       case 'list_response':
+        final responseRequestId = data['requestId'] as String?;
+        if (responseRequestId != null &&
+            responseRequestId != _pendingDirectoryRequestId) {
+          break;
+        }
+        _pendingDirectoryRequestId = null;
         remoteBrowserError = null;
         remoteCurrentPath = data['path'] as String? ?? '';
         remoteCurrentDisplayPath =
@@ -528,6 +536,12 @@ class PeerSession extends ChangeNotifier {
         notifyListeners();
         break;
       case 'error':
+        final responseRequestId = data['requestId'] as String?;
+        if (responseRequestId != null &&
+            responseRequestId != _pendingDirectoryRequestId) {
+          break;
+        }
+        _pendingDirectoryRequestId = null;
         remoteDirectoryKind = _directoryKindFromWire(data['root']);
         remoteCurrentPath = data['path'] as String? ?? remoteCurrentPath;
         remoteCurrentDisplayPath =
@@ -738,6 +752,7 @@ class PeerSession extends ChangeNotifier {
   Future<void> _sendDirectoryListing(
     String relativePath, {
     required PeerDirectoryKind kind,
+    String? requestId,
   }) async {
     try {
       final entries = await listLocalDirectory(relativePath, kind: kind);
@@ -749,6 +764,7 @@ class PeerSession extends ChangeNotifier {
         'type': 'list_response',
         'root': kind.name,
         'path': relativePath,
+        'requestId': ?requestId,
         'displayPath': displayPath,
         'entries': entries.map((entry) => entry.toJson()).toList(),
       });
@@ -757,6 +773,7 @@ class PeerSession extends ChangeNotifier {
         'type': 'error',
         'root': kind.name,
         'path': relativePath,
+        'requestId': ?requestId,
         'displayPath': await localDirectoryDisplayPath(
           relativePath,
           kind: kind,
@@ -790,9 +807,12 @@ class PeerSession extends ChangeNotifier {
     if (!_isDataChannelOpen) return;
     remoteBrowserError = null;
     remoteDirectoryKind = kind;
+    final requestId = _randomId();
+    _pendingDirectoryRequestId = requestId;
     unawaited(
       _sendControlMessage({
         'type': 'list_request',
+        'requestId': requestId,
         'root': kind.name,
         'path': path,
       }),
@@ -1476,6 +1496,7 @@ class PeerSession extends ChangeNotifier {
     _remoteDescriptionSet = false;
     _hasPendingOffer = false;
     _initialDirectoryRequested = false;
+    _pendingDirectoryRequestId = null;
     _lastRemoteOfferSdp = null;
     _outgoingBatchId = null;
     _outgoingTransferActive = false;

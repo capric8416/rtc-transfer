@@ -786,6 +786,7 @@ class _TransferWorkspaceState extends State<_TransferWorkspace> {
   bool _remoteLoading = true;
   bool _disconnecting = false;
   int _completedReceives = 0;
+  String? _completedReceiveBatchId;
 
   PeerDirectoryKind get _localKind => _mode == _TransferMode.send
       ? PeerDirectoryKind.shared
@@ -825,6 +826,14 @@ class _TransferWorkspaceState extends State<_TransferWorkspace> {
         .length;
     if (completedReceives != _completedReceives) {
       _completedReceives = completedReceives;
+      if (_mode == _TransferMode.receive) unawaited(_loadLocalDirectory());
+    }
+    final overview = widget.session.transferOverview;
+    if (overview != null &&
+        overview.direction == TransferDirection.receiving &&
+        overview.state == TransferState.complete &&
+        overview.id != _completedReceiveBatchId) {
+      _completedReceiveBatchId = overview.id;
       if (_mode == _TransferMode.receive) unawaited(_loadLocalDirectory());
     }
     final remoteReady =
