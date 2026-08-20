@@ -537,6 +537,13 @@ class PeerSession extends ChangeNotifier {
         break;
       case 'error':
         final responseRequestId = data['requestId'] as String?;
+        if (responseRequestId == null && _pendingDirectoryRequestId == null) {
+          _showIncomingTransferFailure(
+            data['path'] as String? ?? '传输任务',
+            data['message'] as String? ?? '对端发送失败',
+          );
+          break;
+        }
         if (responseRequestId != null &&
             responseRequestId != _pendingDirectoryRequestId) {
           break;
@@ -550,6 +557,12 @@ class PeerSession extends ChangeNotifier {
         remoteEntries = const [];
         notifyListeners();
         break;
+      case 'transfer_failure':
+        _showIncomingTransferFailure(
+          data['name'] as String? ?? '传输任务',
+          data['message'] as String? ?? '对端发送失败',
+        );
+        break;
       case 'download':
         // Do not await the complete directory transfer from the ordered
         // incoming-message queue. Each file waits for a transfer_ack sent on
@@ -561,6 +574,7 @@ class PeerSession extends ChangeNotifier {
             destinationDirectory: data['destination'] as String? ?? '',
             displayName: data['name'] as String?,
             totalBytes: (data['size'] as num?)?.toInt(),
+            isDirectory: data['directory'] as bool?,
           ),
         );
         break;
@@ -684,6 +698,7 @@ class PeerSession extends ChangeNotifier {
     required String destinationDirectory,
     String? displayName,
     int? totalBytes,
+    bool? isDirectory,
   }) async {
     try {
       await sendRelativePath(
@@ -691,13 +706,13 @@ class PeerSession extends ChangeNotifier {
         destinationDirectory: destinationDirectory,
         displayName: displayName,
         totalBytes: totalBytes,
+        isDirectory: isDirectory,
       );
     } catch (error) {
       if (_isDataChannelOpen) {
         await _sendJson({
-          'type': 'error',
-          'root': PeerDirectoryKind.shared.name,
-          'path': relativePath,
+          'type': 'transfer_failure',
+          'name': displayName ?? relativePath,
           'message': '发送目录失败：$error',
         });
       }
@@ -828,6 +843,7 @@ class PeerSession extends ChangeNotifier {
         'destination': destinationDirectory,
         'name': entry.name,
         'size': entry.size,
+        'directory': entry.isDirectory,
       }),
     );
   }
@@ -863,6 +879,7 @@ class PeerSession extends ChangeNotifier {
     String destinationDirectory = '',
     String? displayName,
     int? totalBytes,
+    bool? isDirectory,
   }) async {
     if (_outgoingTransferActive) {
       throw StateError('已有传输任务正在进行');
@@ -874,6 +891,7 @@ class PeerSession extends ChangeNotifier {
         destinationDirectory: destinationDirectory,
         displayName: displayName,
         totalBytes: totalBytes,
+        isDirectory: isDirectory,
       );
     } finally {
       _outgoingTransferActive = false;
@@ -885,10 +903,11 @@ class PeerSession extends ChangeNotifier {
     required String destinationDirectory,
     String? displayName,
     int? totalBytes,
+    bool? isDirectory,
   }) async {
     final resolvedTotalBytes = totalBytes != null && totalBytes > 0
         ? totalBytes
-        : await _relativePathSize(relativePath);
+        : await _relativePathSize(relativePath, isDirectory: isDirectory);
     final batchId = _randomId();
     final overview = TransferOverview(
       id: batchId,
@@ -915,6 +934,7 @@ class PeerSession extends ChangeNotifier {
       await _sendRelativePathContents(
         relativePath,
         destinationDirectory: destinationDirectory,
+        isDirectory: isDirectory,
       );
       await _sendJson({'type': 'batch_end', 'id': batchId});
       await batchAcknowledgement.future.timeout(const Duration(minutes: 30));
@@ -940,6 +960,7 @@ class PeerSession extends ChangeNotifier {
   Future<void> _sendRelativePathContents(
     String relativePath, {
     required String destinationDirectory,
+    bool? isDirectory,
   }) async {
     if (ReceiveStorage.isAndroidSafDirectory(sharedRoot)) {
       final directories = await ReceiveStorage.listSharedDirectoriesRecursive(
@@ -974,26 +995,16 @@ class PeerSession extends ChangeNotifier {
     }
     final entity = _safeEntity(relativePath, requireRoot: true);
     if (entity == null) return;
-    if (await FileSystemEntity.isDirectory(entity.path)) {
+    final treatAsDirectory =
+        isDirectory ?? await FileSystemEntity.isDirectory(entity.path);
+    if (treatAsDirectory) {
       final directory = Directory(entity.path);
-      await _sendDirectory(
-        p.join(destinationDirectory, p.basename(directory.path)),
+      final destinationPath = p.join(
+        destinationDirectory,
+        p.basename(directory.path),
       );
-      await for (final child in directory.list(
-        recursive: true,
-        followLinks: false,
-      )) {
-        final destinationPath = p.join(
-          destinationDirectory,
-          p.basename(directory.path),
-          p.relative(child.path, from: directory.path),
-        );
-        if (child is Directory) {
-          await _sendDirectory(destinationPath);
-        } else if (child is File) {
-          await _sendFile(child, destinationPath);
-        }
-      }
+      await _sendDirectory(destinationPath);
+      await _sendDirectoryContents(directory, destinationPath);
     } else if (await FileSystemEntity.isFile(entity.path)) {
       await _sendFile(
         File(entity.path),
@@ -1013,7 +1024,25 @@ class PeerSession extends ChangeNotifier {
   Future<void> _sendDirectory(String destinationPath) =>
       _sendJson({'type': 'directory_create', 'path': destinationPath});
 
-  Future<int> _relativePathSize(String relativePath) async {
+  Future<void> _sendDirectoryContents(
+    Directory directory,
+    String destinationPath,
+  ) async {
+    await for (final child in directory.list(followLinks: false)) {
+      final childDestination = p.join(destinationPath, p.basename(child.path));
+      if (child is Directory) {
+        await _sendDirectory(childDestination);
+        await _sendDirectoryContents(child, childDestination);
+      } else if (child is File) {
+        await _sendFile(child, childDestination);
+      }
+    }
+  }
+
+  Future<int> _relativePathSize(
+    String relativePath, {
+    bool? isDirectory,
+  }) async {
     if (ReceiveStorage.isAndroidSafDirectory(sharedRoot)) {
       return ReceiveStorage.sharedPathSize(
         treeUri: sharedRoot!,
@@ -1022,7 +1051,9 @@ class PeerSession extends ChangeNotifier {
     }
     final entity = _safeEntity(relativePath, requireRoot: true);
     if (entity == null) return 0;
-    if (await FileSystemEntity.isDirectory(entity.path)) {
+    final treatAsDirectory =
+        isDirectory ?? await FileSystemEntity.isDirectory(entity.path);
+    if (treatAsDirectory) {
       return _directorySize(Directory(entity.path));
     }
     return File(entity.path).length();
@@ -1363,17 +1394,28 @@ class PeerSession extends ChangeNotifier {
 
   Future<int> _directorySize(Directory directory) async {
     var total = 0;
-    await for (final entity in directory.list(
-      recursive: true,
-      followLinks: false,
-    )) {
-      if (entity is File) {
-        try {
-          total += await entity.length();
-        } catch (_) {}
+    await for (final entity in directory.list(followLinks: false)) {
+      if (entity is Directory) {
+        total += await _directorySize(entity);
+      } else if (entity is File) {
+        total += await entity.length();
       }
     }
     return total;
+  }
+
+  void _showIncomingTransferFailure(String name, String message) {
+    transferOverview =
+        TransferOverview(
+            id: _randomId(),
+            name: name,
+            totalBytes: 0,
+            direction: TransferDirection.receiving,
+          )
+          ..state = TransferState.failed
+          ..error = message
+          ..stopwatch.stop();
+    notifyListeners();
   }
 
   Future<void> _sendJson(Map<String, dynamic> data) async {

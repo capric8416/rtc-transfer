@@ -920,6 +920,7 @@ class _TransferWorkspaceState extends State<_TransferWorkspace> {
           destinationDirectory: _remoteReceivePath,
           displayName: entry.name,
           totalBytes: entry.size,
+          isDirectory: entry.isDirectory,
         );
         if (mounted) _requestRemoteDirectory(_remoteReceivePath);
       } else {
