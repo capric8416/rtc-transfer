@@ -3,9 +3,12 @@ import 'dart:convert';
 import 'dart:io';
 
 class PresenceService {
+  static const _heartbeatInterval = Duration(seconds: 15);
+
   WebSocket? _socket;
   StreamSubscription<dynamic>? _subscription;
   Timer? _retryTimer;
+  Timer? _heartbeatTimer;
   bool _stopped = true;
   bool _connecting = false;
   int _generation = 0;
@@ -50,10 +53,34 @@ class PresenceService {
         return;
       }
       _socket = socket;
+      _heartbeatTimer?.cancel();
+      _heartbeatTimer = Timer.periodic(_heartbeatInterval, (_) {
+        if (!identical(_socket, socket) ||
+            socket.readyState != WebSocket.open) {
+          _heartbeatTimer?.cancel();
+          _heartbeatTimer = null;
+          return;
+        }
+        socket.add(jsonEncode({'type': 'heartbeat'}));
+      });
       _subscription = socket.listen(
         (_) {},
-        onError: (_) => _scheduleReconnect(generation),
-        onDone: () => _scheduleReconnect(generation),
+        onError: (_) {
+          if (!identical(_socket, socket)) return;
+          _heartbeatTimer?.cancel();
+          _heartbeatTimer = null;
+          _socket = null;
+          _subscription = null;
+          _scheduleReconnect(generation);
+        },
+        onDone: () {
+          if (!identical(_socket, socket)) return;
+          _heartbeatTimer?.cancel();
+          _heartbeatTimer = null;
+          _socket = null;
+          _subscription = null;
+          _scheduleReconnect(generation);
+        },
         cancelOnError: true,
       );
     } catch (_) {
@@ -78,6 +105,8 @@ class PresenceService {
     _generation++;
     _retryTimer?.cancel();
     _retryTimer = null;
+    _heartbeatTimer?.cancel();
+    _heartbeatTimer = null;
     await _subscription?.cancel();
     _subscription = null;
     await _socket?.close();

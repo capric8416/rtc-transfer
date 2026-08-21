@@ -5,8 +5,11 @@ import 'dart:io';
 enum SignalingRole { host, peer, presence }
 
 class SignalingService {
+  static const _heartbeatInterval = Duration(seconds: 15);
+
   WebSocket? _socket;
   StreamSubscription<dynamic>? _subscription;
+  Timer? _heartbeatTimer;
   int _generation = 0;
 
   final _messages = StreamController<Map<String, dynamic>>.broadcast();
@@ -57,6 +60,15 @@ class SignalingService {
       throw const SignalingConnectionCancelled();
     }
     _socket = socket;
+    _heartbeatTimer?.cancel();
+    _heartbeatTimer = Timer.periodic(_heartbeatInterval, (_) {
+      if (!identical(_socket, socket) || socket.readyState != WebSocket.open) {
+        _heartbeatTimer?.cancel();
+        _heartbeatTimer = null;
+        return;
+      }
+      socket.add(jsonEncode({'type': 'heartbeat'}));
+    });
     _subscription = socket.listen(
       (data) {
         if (data is! String) return;
@@ -67,11 +79,17 @@ class SignalingService {
         }
       },
       onError: (Object error) {
-        if (identical(_socket, socket)) _socket = null;
+        if (identical(_socket, socket)) {
+          _heartbeatTimer?.cancel();
+          _heartbeatTimer = null;
+          _socket = null;
+        }
         _messages.add({'type': 'error', 'message': error.toString()});
       },
       onDone: () {
         if (identical(_socket, socket)) {
+          _heartbeatTimer?.cancel();
+          _heartbeatTimer = null;
           _socket = null;
           _subscription = null;
         }
@@ -90,6 +108,8 @@ class SignalingService {
 
   Future<void> close() async {
     _generation++;
+    _heartbeatTimer?.cancel();
+    _heartbeatTimer = null;
     await _subscription?.cancel();
     _subscription = null;
     await _socket?.close();

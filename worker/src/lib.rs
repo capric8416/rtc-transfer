@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use worker::*;
 
 const MAX_SIGNAL_BYTES: usize = 256 * 1024;
+const PRESENCE_TTL_MS: u64 = 45 * 1000;
 
 #[derive(Debug, Deserialize)]
 struct SignalQuery {
@@ -25,6 +26,8 @@ struct SocketAttachment {
     attempts: u8,
     client_identifier: Option<String>,
     host_token: Option<String>,
+    #[serde(default)]
+    last_seen_ms: u64,
 }
 
 #[event(fetch, respond_with_errors)]
@@ -112,9 +115,24 @@ impl DurableObject for SignalRoom {
 
     async fn fetch(&self, req: Request) -> Result<Response> {
         if req.path() == "/presence" {
+            let now = Date::now().as_millis();
+            let mut online = false;
+            for tag in ["host", "presence"] {
+                for socket in self.state.get_websockets_with_tag(tag) {
+                    let fresh = socket
+                        .deserialize_attachment::<SocketAttachment>()?
+                        .is_some_and(|attachment| {
+                            now.saturating_sub(attachment.last_seen_ms) <= PRESENCE_TTL_MS
+                        });
+                    if fresh {
+                        online = true;
+                    } else {
+                        let _ = socket.close(Some(4001), Some("Heartbeat timeout"));
+                    }
+                }
+            }
             return Response::from_json(&serde_json::json!({
-                "online": !self.state.get_websockets_with_tag("host").is_empty()
-                    || !self.state.get_websockets_with_tag("presence").is_empty()
+                "online": online
             }));
         }
         if !is_websocket_upgrade(&req)? {
@@ -162,6 +180,7 @@ impl DurableObject for SignalRoom {
             attempts: 0,
             client_identifier: query.client_identifier,
             host_token: query.host_token,
+            last_seen_ms: Date::now().as_millis(),
         })?;
         self.state
             .accept_websocket_with_tags(&pair.server, &[query.role.as_str()]);
@@ -198,6 +217,12 @@ impl DurableObject for SignalRoom {
             .get("type")
             .and_then(|item| item.as_str())
             .unwrap_or("");
+
+        sender.last_seen_ms = Date::now().as_millis();
+        ws.serialize_attachment(&sender)?;
+        if message_type == "heartbeat" {
+            return Ok(());
+        }
 
         if sender.role == "presence" {
             return Ok(());
