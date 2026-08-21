@@ -7,6 +7,7 @@ enum SignalingRole { host, peer, presence }
 class SignalingService {
   WebSocket? _socket;
   StreamSubscription<dynamic>? _subscription;
+  int _generation = 0;
 
   final _messages = StreamController<Map<String, dynamic>>.broadcast();
   Stream<Map<String, dynamic>> get messages => _messages.stream;
@@ -20,6 +21,7 @@ class SignalingService {
     required String hostToken,
   }) async {
     await close();
+    final generation = _generation;
     final base = Uri.parse(baseUrl);
     if (base.scheme != 'wss') {
       throw const FormatException('信令地址必须使用 wss:// TLS 加密');
@@ -39,9 +41,21 @@ class SignalingService {
         'hostToken': hostToken,
       },
     );
-    final socket = await WebSocket.connect(
-      uri.toString(),
-    ).timeout(const Duration(seconds: 12));
+    late final WebSocket socket;
+    try {
+      socket = await WebSocket.connect(
+        uri.toString(),
+      ).timeout(const Duration(seconds: 12));
+    } catch (_) {
+      if (generation != _generation) {
+        throw const SignalingConnectionCancelled();
+      }
+      rethrow;
+    }
+    if (generation != _generation) {
+      await socket.close();
+      throw const SignalingConnectionCancelled();
+    }
     _socket = socket;
     _subscription = socket.listen(
       (data) {
@@ -75,6 +89,7 @@ class SignalingService {
   }
 
   Future<void> close() async {
+    _generation++;
     await _subscription?.cancel();
     _subscription = null;
     await _socket?.close();
@@ -85,4 +100,11 @@ class SignalingService {
     await close();
     await _messages.close();
   }
+}
+
+class SignalingConnectionCancelled implements Exception {
+  const SignalingConnectionCancelled();
+
+  @override
+  String toString() => '信令连接已取消';
 }

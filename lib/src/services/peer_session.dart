@@ -100,6 +100,7 @@ class PeerSession extends ChangeNotifier {
   bool _outgoingTransferActive = false;
   String? _lanTotpCode;
   String? _localIdentifier;
+  int _sessionGeneration = 0;
 
   PeerStatus status = PeerStatus.idle;
   String? errorMessage;
@@ -126,11 +127,16 @@ class PeerSession extends ChangeNotifier {
     _hostSignalingUrl = signalingUrl;
     _hostIdentifier = identifier;
     _hostToken = hostToken;
+    final generation = _sessionGeneration;
     await _listenToSignals();
-    await _connectHost(rethrowOnFailure: true);
+    await _connectHost(rethrowOnFailure: true, expectedGeneration: generation);
   }
 
-  Future<void> _connectHost({bool rethrowOnFailure = false}) async {
+  Future<void> _connectHost({
+    bool rethrowOnFailure = false,
+    int? expectedGeneration,
+  }) async {
+    final generation = expectedGeneration ?? _sessionGeneration;
     final signalingUrl = _hostSignalingUrl;
     final identifier = _hostIdentifier;
     final hostToken = _hostToken;
@@ -148,9 +154,16 @@ class PeerSession extends ChangeNotifier {
         clientIdentifier: identifier,
         hostToken: hostToken,
       );
+      if (!_isCurrentHostSession(generation)) {
+        return;
+      }
       _hostReconnectAttempt = 0;
       if (!isConnected) _setStatus(PeerStatus.waiting);
     } catch (error) {
+      if (!_isCurrentHostSession(generation) ||
+          error is SignalingConnectionCancelled) {
+        return;
+      }
       _fail('无法连接信令服务，正在重试：$error');
       _scheduleHostReconnect();
       if (rethrowOnFailure) rethrow;
@@ -166,9 +179,14 @@ class PeerSession extends ChangeNotifier {
     _hostReconnectAttempt++;
     _hostReconnectTimer = Timer(delay, () {
       _hostReconnectTimer = null;
-      unawaited(_connectHost());
+      unawaited(_connectHost(expectedGeneration: _sessionGeneration));
     });
   }
+
+  bool _isCurrentHostSession(int generation) =>
+      generation == _sessionGeneration &&
+      _role == SignalingRole.host &&
+      !_usingLan;
 
   void ensureHosting() {
     if (_role == SignalingRole.host && !_signaling.isOpen) {
@@ -184,6 +202,7 @@ class PeerSession extends ChangeNotifier {
     required String localHostToken,
   }) async {
     await disconnect();
+    final generation = _sessionGeneration;
     _role = SignalingRole.peer;
     _targetIdentifier = identifier;
     _setStatus(PeerStatus.connecting);
@@ -196,8 +215,17 @@ class PeerSession extends ChangeNotifier {
         clientIdentifier: localIdentifier,
         hostToken: localHostToken,
       );
+      if (generation != _sessionGeneration ||
+          _role != SignalingRole.peer ||
+          _usingLan) {
+        return;
+      }
       _signaling.send({'type': 'authenticate', 'totp': totpCode});
     } catch (error) {
+      if (generation != _sessionGeneration ||
+          error is SignalingConnectionCancelled) {
+        return;
+      }
       _fail('连接失败：$error');
       rethrow;
     }
@@ -1535,6 +1563,7 @@ class PeerSession extends ChangeNotifier {
   }
 
   Future<void> disconnect() async {
+    _sessionGeneration++;
     _hostReconnectTimer?.cancel();
     _hostReconnectTimer = null;
     _hostReconnectAttempt = 0;
