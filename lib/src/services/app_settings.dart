@@ -27,6 +27,8 @@ class AppSettings {
       _preferences.getString('receiveDirectoryLabel');
   List<String> get pairedDevices =>
       _preferences.getStringList('pairedDevices') ?? const [];
+  List<String> get lanPairedDevices =>
+      _preferences.getStringList('lanPairedDevices') ?? const [];
 
   static Future<AppSettings> load() async {
     final settings = AppSettings._(await SharedPreferences.getInstance());
@@ -85,14 +87,30 @@ class AppSettings {
     }
   }
 
-  Future<void> addPairedDevice(String identifier) async {
+  Future<void> addPairedDevice(String identifier, {bool isLan = false}) async {
     final devices = pairedDevices.toSet()..add(identifier);
     await _preferences.setStringList('pairedDevices', devices.toList()..sort());
+    if (isLan) await rememberLanDevices([identifier]);
+  }
+
+  Future<void> rememberLanDevices(Iterable<String> identifiers) async {
+    final paired = pairedDevices.toSet();
+    final lanDevices = lanPairedDevices.toSet()
+      ..addAll(identifiers.where(paired.contains));
+    await _preferences.setStringList(
+      'lanPairedDevices',
+      lanDevices.toList()..sort(),
+    );
   }
 
   Future<void> removePairedDevice(String identifier) async {
     final devices = pairedDevices.toSet()..remove(identifier);
     await _preferences.setStringList('pairedDevices', devices.toList()..sort());
+    final lanDevices = lanPairedDevices.toSet()..remove(identifier);
+    await _preferences.setStringList(
+      'lanPairedDevices',
+      lanDevices.toList()..sort(),
+    );
   }
 
   static String _randomString(int length) {

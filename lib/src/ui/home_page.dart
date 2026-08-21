@@ -54,6 +54,11 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     );
     _lanDevicesSubscription = _lanDiscovery.devices.listen((devices) {
       if (!mounted) return;
+      unawaited(
+        widget.settings.rememberLanDevices(
+          devices.map((device) => device.identifier),
+        ),
+      );
       setState(() {
         _lanDevices = {for (final device in devices) device.identifier: device};
       });
@@ -179,7 +184,10 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
   Future<void> _onPaired(String identifier) async {
     if (identifier == widget.settings.identifier) return;
-    await widget.settings.addPairedDevice(identifier);
+    await widget.settings.addPairedDevice(
+      identifier,
+      isLan: _session.isLanConnection,
+    );
     await _refreshPresence();
   }
 
@@ -287,6 +295,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
   Widget _buildPairedDevices(BuildContext context) {
     final pairedDevices = widget.settings.pairedDevices.toSet();
+    final knownLanDevices = widget.settings.lanPairedDevices.toSet();
     final devices = {...pairedDevices, ..._lanDevices.keys}.toList()..sort();
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -322,12 +331,15 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                   itemBuilder: (context, index) {
                     final identifier = devices[index];
                     final lanDevice = _lanDevices[identifier];
-                    final isLan = lanDevice != null;
+                    final isCurrentlyLan = lanDevice != null;
                     final online =
-                        isLan ||
+                        isCurrentlyLan ||
                         (_onlineDevices[identifier] ?? false) ||
                         (_session.isConnected &&
                             _session.remoteIdentifier == identifier);
+                    final showLanIcon =
+                        isCurrentlyLan ||
+                        (!online && knownLanDevices.contains(identifier));
                     return GestureDetector(
                       onDoubleTap: online
                           ? () => _openTotpForDevice(identifier)
@@ -338,7 +350,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                           smallSize: 10,
                           child: CircleAvatar(
                             child: Icon(
-                              isLan ? Icons.lan_outlined : Icons.public,
+                              showLanIcon ? Icons.lan_outlined : Icons.public,
                               size: 20,
                             ),
                           ),
@@ -348,13 +360,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                         ),
-                        subtitle: Text(
-                          isLan
-                              ? '在线 · 双击验证'
-                              : online
-                              ? '在线 · 双击验证'
-                              : '离线',
-                        ),
+                        subtitle: Text(online ? '在线 · 双击验证' : '离线'),
                         trailing: pairedDevices.contains(identifier)
                             ? IconButton(
                                 tooltip: '移除',
