@@ -5,18 +5,22 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
+import '../models/device_platform.dart';
+
 class LanDevice {
   const LanDevice({
     required this.identifier,
     required this.address,
     required this.port,
     required this.lastSeen,
+    this.platform = DevicePlatform.unknown,
   });
 
   final String identifier;
   final String address;
   final int port;
   final DateTime lastSeen;
+  final DevicePlatform platform;
 }
 
 typedef LanConnectionHandler =
@@ -124,6 +128,7 @@ class LanDiscoveryService {
         'version': _protocolVersion,
         'identifier': identifier,
         'port': server.port,
+        'platform': DevicePlatform.current.name,
       }),
     );
     final destination = InternetAddress(multicastAddress);
@@ -187,6 +192,7 @@ class LanDiscoveryService {
           address: datagram.address.address,
           port: port,
           lastSeen: DateTime.now(),
+          platform: DevicePlatform.fromWire(data['platform']),
         );
         _devices[identifier] = device;
         if (previous == null ||

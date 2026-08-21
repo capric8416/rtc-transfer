@@ -1,8 +1,10 @@
+import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
 
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../models/device_platform.dart';
 import 'totp_service.dart';
 
 class AppSettings {
@@ -29,6 +31,19 @@ class AppSettings {
       _preferences.getStringList('pairedDevices') ?? const [];
   List<String> get lanPairedDevices =>
       _preferences.getStringList('lanPairedDevices') ?? const [];
+  Map<String, DevicePlatform> get pairedDevicePlatforms {
+    final encoded = _preferences.getString('pairedDevicePlatforms');
+    if (encoded == null) return const {};
+    try {
+      final values = jsonDecode(encoded) as Map<String, dynamic>;
+      return values.map(
+        (identifier, platform) =>
+            MapEntry(identifier, DevicePlatform.fromWire(platform)),
+      );
+    } catch (_) {
+      return const {};
+    }
+  }
 
   static Future<AppSettings> load() async {
     final settings = AppSettings._(await SharedPreferences.getInstance());
@@ -87,10 +102,32 @@ class AppSettings {
     }
   }
 
-  Future<void> addPairedDevice(String identifier, {bool isLan = false}) async {
+  Future<void> addPairedDevice(
+    String identifier, {
+    bool isLan = false,
+    DevicePlatform platform = DevicePlatform.unknown,
+  }) async {
     final devices = pairedDevices.toSet()..add(identifier);
     await _preferences.setStringList('pairedDevices', devices.toList()..sort());
     if (isLan) await rememberLanDevices([identifier]);
+    await rememberDevicePlatforms({identifier: platform});
+  }
+
+  Future<void> rememberDevicePlatforms(
+    Map<String, DevicePlatform> platforms,
+  ) async {
+    final paired = pairedDevices.toSet();
+    final known = Map<String, DevicePlatform>.from(pairedDevicePlatforms);
+    for (final entry in platforms.entries) {
+      if (paired.contains(entry.key) && entry.value != DevicePlatform.unknown) {
+        known[entry.key] = entry.value;
+      }
+    }
+    known.removeWhere((identifier, _) => !paired.contains(identifier));
+    await _preferences.setString(
+      'pairedDevicePlatforms',
+      jsonEncode(known.map((key, value) => MapEntry(key, value.name))),
+    );
   }
 
   Future<void> rememberLanDevices(Iterable<String> identifiers) async {
@@ -110,6 +147,12 @@ class AppSettings {
     await _preferences.setStringList(
       'lanPairedDevices',
       lanDevices.toList()..sort(),
+    );
+    final platforms = Map<String, DevicePlatform>.from(pairedDevicePlatforms)
+      ..remove(identifier);
+    await _preferences.setString(
+      'pairedDevicePlatforms',
+      jsonEncode(platforms.map((key, value) => MapEntry(key, value.name))),
     );
   }
 

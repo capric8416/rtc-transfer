@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import 'package:path/path.dart' as p;
 import 'package:qr_flutter/qr_flutter.dart';
 
+import '../models/device_platform.dart';
 import '../models/file_entry.dart';
 import '../models/transfer_task.dart';
 import '../services/app_settings.dart';
@@ -15,6 +16,7 @@ import '../services/presence_service.dart';
 import '../services/receive_storage.dart';
 import '../services/totp_service.dart';
 import '../utils/formatters.dart';
+import 'widgets/device_type_icon.dart';
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key, required this.settings});
@@ -58,6 +60,11 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         widget.settings.rememberLanDevices(
           devices.map((device) => device.identifier),
         ),
+      );
+      unawaited(
+        widget.settings.rememberDevicePlatforms({
+          for (final device in devices) device.identifier: device.platform,
+        }),
       );
       setState(() {
         _lanDevices = {for (final device in devices) device.identifier: device};
@@ -182,11 +189,12 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     }
   }
 
-  Future<void> _onPaired(String identifier) async {
+  Future<void> _onPaired(String identifier, DevicePlatform platform) async {
     if (identifier == widget.settings.identifier) return;
     await widget.settings.addPairedDevice(
       identifier,
       isLan: _session.isLanConnection,
+      platform: platform,
     );
     await _refreshPresence();
   }
@@ -296,6 +304,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   Widget _buildPairedDevices(BuildContext context) {
     final pairedDevices = widget.settings.pairedDevices.toSet();
     final knownLanDevices = widget.settings.lanPairedDevices.toSet();
+    final knownPlatforms = widget.settings.pairedDevicePlatforms;
     final devices = {...pairedDevices, ..._lanDevices.keys}.toList()..sort();
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -340,6 +349,10 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                     final showLanIcon =
                         isCurrentlyLan ||
                         (!online && knownLanDevices.contains(identifier));
+                    final platform =
+                        lanDevice?.platform ??
+                        knownPlatforms[identifier] ??
+                        DevicePlatform.unknown;
                     return GestureDetector(
                       onDoubleTap: online
                           ? () => _openTotpForDevice(identifier)
@@ -348,11 +361,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                         leading: Badge(
                           backgroundColor: online ? Colors.green : Colors.grey,
                           smallSize: 10,
-                          child: CircleAvatar(
-                            child: Icon(
-                              showLanIcon ? Icons.lan_outlined : Icons.public,
-                              size: 20,
-                            ),
+                          child: DeviceTypeIcon(
+                            platform: platform,
+                            isLan: showLanIcon,
                           ),
                         ),
                         title: Text(

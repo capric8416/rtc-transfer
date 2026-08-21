@@ -8,6 +8,7 @@ import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:path/path.dart' as p;
 
 import '../models/file_entry.dart';
+import '../models/device_platform.dart';
 import '../models/transfer_task.dart';
 import 'receive_storage.dart';
 import 'signaling_service.dart';
@@ -16,6 +17,9 @@ import 'totp_service.dart';
 enum PeerStatus { idle, waiting, connecting, connected, disconnected, error }
 
 enum PeerDirectoryKind { shared, receive }
+
+typedef DevicePairedCallback =
+    void Function(String identifier, DevicePlatform platform);
 
 class TransferOverview {
   TransferOverview({
@@ -62,7 +66,7 @@ class PeerSession extends ChangeNotifier {
   final String? sharedRoot;
   final String? receiveDirectory;
   final String totpSecret;
-  final ValueChanged<String>? onPaired;
+  final DevicePairedCallback? onPaired;
   final SignalingService _signaling = SignalingService();
   final List<TransferTask> transfers = [];
   TransferOverview? transferOverview;
@@ -340,7 +344,7 @@ class PeerSession extends ChangeNotifier {
             final peerIdentifier = message['peerIdentifier'] as String?;
             if (peerIdentifier != null && peerIdentifier.isNotEmpty) {
               _targetIdentifier = peerIdentifier;
-              onPaired?.call(peerIdentifier);
+              onPaired?.call(peerIdentifier, DevicePlatform.unknown);
             }
           }
           if (!valid) _setStatus(PeerStatus.waiting);
@@ -348,7 +352,9 @@ class PeerSession extends ChangeNotifier {
         case 'auth_ok':
           if (_role == SignalingRole.peer) {
             final target = _targetIdentifier;
-            if (target != null) onPaired?.call(target);
+            if (target != null) {
+              onPaired?.call(target, DevicePlatform.unknown);
+            }
             _setStatus(PeerStatus.connecting);
           }
           break;
@@ -505,6 +511,7 @@ class PeerSession extends ChangeNotifier {
             'type': 'lan_auth',
             'totp': _lanTotpCode,
             'peerIdentifier': _localIdentifier,
+            'platform': DevicePlatform.current.name,
           }),
         );
       }
@@ -515,6 +522,12 @@ class PeerSession extends ChangeNotifier {
 
   void _finishDataChannelReady() {
     _setStatus(PeerStatus.connected);
+    unawaited(
+      _sendJson({
+        'type': 'device_info',
+        'platform': DevicePlatform.current.name,
+      }),
+    );
     if (_initialDirectoryRequested) return;
     _initialDirectoryRequested = true;
     requestRemoteDirectory('', kind: PeerDirectoryKind.shared);
@@ -539,6 +552,12 @@ class PeerSession extends ChangeNotifier {
       return;
     }
     switch (data['type']) {
+      case 'device_info':
+        final identifier = _targetIdentifier;
+        if (identifier != null) {
+          onPaired?.call(identifier, DevicePlatform.fromWire(data['platform']));
+        }
+        break;
       case 'list_request':
         await _sendDirectoryListing(
           data['path'] as String? ?? '',
@@ -707,14 +726,23 @@ class PeerSession extends ChangeNotifier {
           totpSecret,
           data['totp'] as String? ?? '',
         );
-        await _sendJson({'type': 'lan_auth_result', 'ok': valid});
+        await _sendJson({
+          'type': 'lan_auth_result',
+          'ok': valid,
+          'platform': DevicePlatform.current.name,
+        });
         if (!valid) {
           _fail('唯一标识或 TOTP 安全码不正确');
           return;
         }
         _lanAuthenticated = true;
         final peerIdentifier = _targetIdentifier;
-        if (peerIdentifier != null) onPaired?.call(peerIdentifier);
+        if (peerIdentifier != null) {
+          onPaired?.call(
+            peerIdentifier,
+            DevicePlatform.fromWire(data['platform']),
+          );
+        }
         _finishDataChannelReady();
         return;
       case 'lan_auth_result':
@@ -725,7 +753,9 @@ class PeerSession extends ChangeNotifier {
         }
         _lanAuthenticated = true;
         final target = _targetIdentifier;
-        if (target != null) onPaired?.call(target);
+        if (target != null) {
+          onPaired?.call(target, DevicePlatform.fromWire(data['platform']));
+        }
         _finishDataChannelReady();
         return;
       default:
