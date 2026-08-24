@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import 'package:path/path.dart' as p;
 import 'package:qr_flutter/qr_flutter.dart';
 
+import '../l10n/app_localizations.dart';
 import '../models/device_platform.dart';
 import '../models/file_entry.dart';
 import '../models/transfer_task.dart';
@@ -19,9 +20,14 @@ import '../utils/formatters.dart';
 import 'widgets/device_type_icon.dart';
 
 class HomePage extends StatefulWidget {
-  const HomePage({super.key, required this.settings});
+  const HomePage({
+    super.key,
+    required this.settings,
+    required this.onLocaleChanged,
+  });
 
   final AppSettings settings;
+  final ValueChanged<Locale?> onLocaleChanged;
 
   @override
   State<HomePage> createState() => _HomePageState();
@@ -122,9 +128,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       await _lanDiscovery.start(identifier: widget.settings.identifier);
     } catch (error) {
       if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('局域网设备发现启动失败：$error')));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('${context.tr('局域网设备发现启动失败')}：$error')),
+        );
       }
     }
   }
@@ -246,7 +252,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         ),
         actions: [
           IconButton(
-            tooltip: '设置',
+            tooltip: context.tr('设置'),
             onPressed: _openSettings,
             icon: const Icon(Icons.settings_outlined),
           ),
@@ -315,12 +321,12 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
             children: [
               Expanded(
                 child: Text(
-                  '设备列表',
+                  context.tr('设备列表'),
                   style: Theme.of(context).textTheme.titleMedium,
                 ),
               ),
               IconButton(
-                tooltip: '刷新在线状态',
+                tooltip: context.tr('刷新在线状态'),
                 onPressed: _refreshPresence,
                 icon: const Icon(Icons.refresh),
               ),
@@ -330,9 +336,11 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         const Divider(height: 1),
         Expanded(
           child: devices.isEmpty
-              ? const Padding(
-                  padding: EdgeInsets.all(20),
-                  child: Text('暂无设备\n局域网设备会自动发现，公网设备在完成 TOTP 验证后加入。'),
+              ? Padding(
+                  padding: const EdgeInsets.all(20),
+                  child: Text(
+                    context.tr('暂无设备\n局域网设备会自动发现，公网设备在完成 TOTP 验证后加入。'),
+                  ),
                 )
               : ListView.builder(
                   padding: const EdgeInsets.symmetric(vertical: 8),
@@ -371,10 +379,10 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                         ),
-                        subtitle: Text(online ? '在线 · 双击验证' : '离线'),
+                        subtitle: Text(context.tr(online ? '在线 · 双击验证' : '离线')),
                         trailing: pairedDevices.contains(identifier)
                             ? IconButton(
-                                tooltip: '移除',
+                                tooltip: context.tr('移除'),
                                 onPressed: () async {
                                   await widget.settings.removePairedDevice(
                                     identifier,
@@ -398,7 +406,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     final shouldConnect = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('TOTP 验证'),
+        title: Text(context.tr('TOTP 验证')),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -410,10 +418,10 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
               autofocus: true,
               keyboardType: TextInputType.number,
               maxLength: 6,
-              decoration: const InputDecoration(
-                labelText: '6 位 TOTP 安全码',
+              decoration: InputDecoration(
+                labelText: context.tr('6 位 TOTP 安全码'),
                 counterText: '',
-                prefixIcon: Icon(Icons.password),
+                prefixIcon: const Icon(Icons.password),
               ),
               onSubmitted: (_) => Navigator.pop(context, true),
             ),
@@ -422,11 +430,11 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context, false),
-            child: const Text('取消'),
+            child: Text(context.tr('取消')),
           ),
           FilledButton(
             onPressed: () => Navigator.pop(context, true),
-            child: const Text('验证并连接'),
+            child: Text(context.tr('验证并连接')),
           ),
         ],
       ),
@@ -446,9 +454,12 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text('让对方连接我', style: Theme.of(context).textTheme.titleLarge),
+          Text(
+            context.tr('让对方连接我'),
+            style: Theme.of(context).textTheme.titleLarge,
+          ),
           const SizedBox(height: 16),
-          const Text('唯一标识'),
+          Text(context.tr('唯一标识')),
           const SizedBox(height: 5),
           SelectableText(
             widget.settings.identifier,
@@ -493,7 +504,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
           ),
           const SizedBox(height: 12),
           Text(
-            _session.isConnected ? '身份已验证' : 'TOTP 安全码每 30 秒自动更新',
+            context.tr(_session.isConnected ? '身份已验证' : 'TOTP 安全码每 30 秒自动更新'),
             style: Theme.of(context).textTheme.bodySmall,
           ),
         ],
@@ -508,16 +519,19 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text('连接另一台设备', style: Theme.of(context).textTheme.titleLarge),
+          Text(
+            context.tr('连接另一台设备'),
+            style: Theme.of(context).textTheme.titleLarge,
+          ),
           const SizedBox(height: 16),
           TextField(
             controller: _targetIdentifier,
             enabled: !_session.isConnected,
             textInputAction: TextInputAction.next,
             onSubmitted: (_) => _targetCodeFocus.requestFocus(),
-            decoration: const InputDecoration(
-              labelText: '对方唯一标识',
-              prefixIcon: Icon(Icons.fingerprint),
+            decoration: InputDecoration(
+              labelText: context.tr('对方唯一标识'),
+              prefixIcon: const Icon(Icons.fingerprint),
             ),
           ),
           const SizedBox(height: 12),
@@ -530,9 +544,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
             textInputAction: TextInputAction.done,
             inputFormatters: [FilteringTextInputFormatter.digitsOnly],
             onSubmitted: (_) => _submitJoinFromKeyboard(),
-            decoration: const InputDecoration(
-              labelText: '6 位 TOTP 安全码',
-              prefixIcon: Icon(Icons.key_outlined),
+            decoration: InputDecoration(
+              labelText: context.tr('6 位 TOTP 安全码'),
+              prefixIcon: const Icon(Icons.key_outlined),
               counterText: '',
             ),
           ),
@@ -546,7 +560,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                     )
                   : _joinPeer,
               icon: Icon(_session.isConnected ? Icons.link_off : Icons.link),
-              label: Text(_session.isConnected ? '断开连接' : '连接'),
+              label: Text(context.tr(_session.isConnected ? '断开连接' : '连接')),
             ),
           ),
         ],
@@ -562,11 +576,12 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     var rootLabel = widget.settings.sharedRootLabel;
     var receiveDirectory = widget.settings.receiveDirectory;
     var receiveDirectoryLabel = widget.settings.receiveDirectoryLabel;
+    var selectedLanguage = widget.settings.languageCode ?? 'system';
     final saved = await showDialog<bool>(
       context: context,
       builder: (context) => StatefulBuilder(
         builder: (context, setDialogState) => AlertDialog(
-          title: const Text('设置'),
+          title: Text(context.tr('设置')),
           content: SizedBox(
             width: 560,
             child: SingleChildScrollView(
@@ -574,10 +589,33 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
+                  DropdownButtonFormField<String>(
+                    initialValue: selectedLanguage,
+                    decoration: InputDecoration(
+                      labelText: context.tr('语言'),
+                      prefixIcon: const Icon(Icons.language),
+                    ),
+                    items: [
+                      DropdownMenuItem(
+                        value: 'system',
+                        child: Text(context.tr('跟随系统')),
+                      ),
+                      ...AppLocalizations.languageOptions.entries.map(
+                        (entry) => DropdownMenuItem(
+                          value: entry.key,
+                          child: Text(entry.value),
+                        ),
+                      ),
+                    ],
+                    onChanged: (value) => setDialogState(
+                      () => selectedLanguage = value ?? 'system',
+                    ),
+                  ),
+                  const SizedBox(height: 14),
                   TextField(
                     controller: signaling,
-                    decoration: const InputDecoration(
-                      labelText: '信令服务地址',
+                    decoration: InputDecoration(
+                      labelText: context.tr('信令服务地址'),
                       hintText: 'wss://example.workers.dev',
                     ),
                   ),
@@ -586,9 +624,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                     controller: identifier,
                     onChanged: (_) => setDialogState(() {}),
                     decoration: InputDecoration(
-                      labelText: '本机唯一标识',
+                      labelText: context.tr('本机唯一标识'),
                       suffixIcon: IconButton(
-                        tooltip: '重新生成',
+                        tooltip: context.tr('重新生成'),
                         onPressed: () => setDialogState(
                           () =>
                               identifier.text = AppSettings.randomIdentifier(),
@@ -610,9 +648,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                       children: [
                         Row(
                           children: [
-                            const Expanded(child: Text('TOTP 密钥')),
+                            Expanded(child: Text(context.tr('TOTP 密钥'))),
                             IconButton(
-                              tooltip: '重新生成 TOTP 密钥',
+                              tooltip: context.tr('重新生成 TOTP 密钥'),
                               onPressed: () => setDialogState(
                                 () => totpSecret = TotpService.generateSecret(),
                               ),
@@ -636,14 +674,14 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                   const SizedBox(height: 14),
                   ListTile(
                     contentPadding: EdgeInsets.zero,
-                    title: const Text('共享目录'),
-                    subtitle: Text(rootLabel ?? '未设置，对方只能向你发送文件'),
+                    title: Text(context.tr('共享目录')),
+                    subtitle: Text(rootLabel ?? context.tr('未设置，对方只能向你发送文件')),
                     trailing: Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
                         if (root != null)
                           IconButton(
-                            tooltip: '清除共享目录',
+                            tooltip: context.tr('清除共享目录'),
                             onPressed: () => setDialogState(() {
                               root = null;
                               rootLabel = null;
@@ -661,7 +699,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                               });
                             }
                           },
-                          child: const Text('选择'),
+                          child: Text(context.tr('选择')),
                         ),
                       ],
                     ),
@@ -669,14 +707,16 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                   const SizedBox(height: 14),
                   ListTile(
                     contentPadding: EdgeInsets.zero,
-                    title: const Text('接收目录'),
-                    subtitle: Text(receiveDirectoryLabel ?? '默认保存到应用专属下载目录'),
+                    title: Text(context.tr('接收目录')),
+                    subtitle: Text(
+                      receiveDirectoryLabel ?? context.tr('默认保存到应用专属下载目录'),
+                    ),
                     trailing: Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
                         if (receiveDirectory != null)
                           IconButton(
-                            tooltip: '恢复默认目录',
+                            tooltip: context.tr('恢复默认目录'),
                             onPressed: () => setDialogState(() {
                               receiveDirectory = null;
                               receiveDirectoryLabel = null;
@@ -694,7 +734,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                               });
                             }
                           },
-                          child: const Text('选择'),
+                          child: Text(context.tr('选择')),
                         ),
                       ],
                     ),
@@ -706,11 +746,11 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
           actions: [
             TextButton(
               onPressed: () => Navigator.pop(context, false),
-              child: const Text('取消'),
+              child: Text(context.tr('取消')),
             ),
             FilledButton(
               onPressed: () => Navigator.pop(context, true),
-              child: const Text('保存'),
+              child: Text(context.tr('保存')),
             ),
           ],
         ),
@@ -718,6 +758,12 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     );
     if (saved != true || !mounted) return;
     await widget.settings.setSignalingUrl(signaling.text);
+    await widget.settings.setLanguageCode(
+      selectedLanguage == 'system' ? null : selectedLanguage,
+    );
+    widget.onLocaleChanged(
+      selectedLanguage == 'system' ? null : Locale(selectedLanguage),
+    );
     await widget.settings.setIdentifier(identifier.text);
     await widget.settings.setTotpSecret(totpSecret);
     await widget.settings.setSharedRoot(root, rootLabel);
@@ -749,14 +795,32 @@ class _StatusBanner extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final (icon, label, color) = switch (session.status) {
-      PeerStatus.idle => (Icons.circle_outlined, '未连接', Colors.grey),
-      PeerStatus.waiting => (Icons.radar, '等待对方连接', Colors.blue),
-      PeerStatus.connecting => (Icons.sync, '正在建立 P2P 连接', Colors.orange),
-      PeerStatus.connected => (Icons.check_circle, 'P2P 已连接', Colors.green),
-      PeerStatus.disconnected => (Icons.link_off, '连接已断开', Colors.grey),
+      PeerStatus.idle => (
+        Icons.circle_outlined,
+        context.tr('未连接'),
+        Colors.grey,
+      ),
+      PeerStatus.waiting => (Icons.radar, context.tr('等待对方连接'), Colors.blue),
+      PeerStatus.connecting => (
+        Icons.sync,
+        context.tr('正在建立 P2P 连接'),
+        Colors.orange,
+      ),
+      PeerStatus.connected => (
+        Icons.check_circle,
+        context.tr('P2P 已连接'),
+        Colors.green,
+      ),
+      PeerStatus.disconnected => (
+        Icons.link_off,
+        context.tr('连接已断开'),
+        Colors.grey,
+      ),
       PeerStatus.error => (
         Icons.error_outline,
-        session.errorMessage ?? '发生错误',
+        session.errorMessage == null
+            ? context.tr('发生错误')
+            : context.localizedMessage(session.errorMessage!),
         Colors.red,
       ),
     };
@@ -889,7 +953,7 @@ class _TransferWorkspaceState extends State<_TransferWorkspace> {
       if (!mounted || kind != _localKind || path != _localPath) return;
       setState(() {
         _localEntries = const [];
-        _localError = '无法读取目录：$error';
+        _localError = '${context.tr('无法读取目录')}：$error';
         _localLoading = false;
       });
     }
@@ -950,7 +1014,7 @@ class _TransferWorkspaceState extends State<_TransferWorkspace> {
       if (!mounted) return;
       ScaffoldMessenger.of(
         context,
-      ).showSnackBar(SnackBar(content: Text('传输失败：$error')));
+      ).showSnackBar(SnackBar(content: Text('${context.tr('传输失败')}：$error')));
     }
   }
 
@@ -972,7 +1036,7 @@ class _TransferWorkspaceState extends State<_TransferWorkspace> {
         ? widget.session.remoteBrowserError
         : null;
     final localPane = _FilePane(
-      title: _mode == _TransferMode.send ? '本端共享目录' : '本端接收目录',
+      title: context.tr(_mode == _TransferMode.send ? '本端共享目录' : '本端接收目录'),
       path: _localDisplayPath,
       entries: _localEntries,
       loading: _localLoading,
@@ -980,7 +1044,7 @@ class _TransferWorkspaceState extends State<_TransferWorkspace> {
       isSource: _mode == _TransferMode.send,
       isDestination: _mode == _TransferMode.receive,
       actionIcon: Icons.arrow_forward,
-      actionTooltip: '发送到对端',
+      actionTooltip: context.tr('发送到对端'),
       onRefresh: _loadLocalDirectory,
       onUp: _localPath.isEmpty
           ? null
@@ -990,7 +1054,7 @@ class _TransferWorkspaceState extends State<_TransferWorkspace> {
       onDrop: _mode == _TransferMode.receive ? _transfer : null,
     );
     final remotePane = _FilePane(
-      title: _mode == _TransferMode.send ? '对端接收目录' : '对端共享目录',
+      title: context.tr(_mode == _TransferMode.send ? '对端接收目录' : '对端共享目录'),
       path: remoteMatches
           ? widget.session.remoteCurrentDisplayPath
           : _remotePath,
@@ -1000,7 +1064,7 @@ class _TransferWorkspaceState extends State<_TransferWorkspace> {
       isSource: _mode == _TransferMode.receive,
       isDestination: _mode == _TransferMode.send,
       actionIcon: Icons.download,
-      actionTooltip: '下载到本端',
+      actionTooltip: context.tr('下载到本端'),
       onRefresh: () => _requestRemoteDirectory(_remotePath),
       onUp: _remotePath.isEmpty
           ? null
@@ -1021,16 +1085,16 @@ class _TransferWorkspaceState extends State<_TransferWorkspace> {
                   scrollDirection: Axis.horizontal,
                   child: SegmentedButton<_TransferMode>(
                     showSelectedIcon: false,
-                    segments: const [
+                    segments: [
                       ButtonSegment(
                         value: _TransferMode.send,
-                        icon: Icon(Icons.upload),
-                        label: Text('发送模式'),
+                        icon: const Icon(Icons.upload),
+                        label: Text(context.tr('发送模式')),
                       ),
                       ButtonSegment(
                         value: _TransferMode.receive,
-                        icon: Icon(Icons.download),
-                        label: Text('接收模式'),
+                        icon: const Icon(Icons.download),
+                        label: Text(context.tr('接收模式')),
                       ),
                     ],
                     selected: {_mode},
@@ -1042,7 +1106,7 @@ class _TransferWorkspaceState extends State<_TransferWorkspace> {
               FilledButton.tonalIcon(
                 onPressed: _disconnecting ? null : _disconnect,
                 icon: const Icon(Icons.link_off),
-                label: const Text('断开'),
+                label: Text(context.tr('断开')),
               ),
             ],
           ),
@@ -1155,12 +1219,12 @@ class _FilePane extends StatelessWidget {
                 children: [
                   if (onUp != null)
                     IconButton(
-                      tooltip: '返回上级',
+                      tooltip: context.tr('返回上级'),
                       onPressed: onUp,
                       icon: const Icon(Icons.arrow_upward),
                     ),
                   IconButton(
-                    tooltip: '刷新',
+                    tooltip: context.tr('刷新'),
                     onPressed: onRefresh,
                     icon: const Icon(Icons.refresh),
                   ),
@@ -1181,12 +1245,17 @@ class _FilePane extends StatelessWidget {
       return Center(
         child: Padding(
           padding: const EdgeInsets.all(20),
-          child: Text(error!, textAlign: TextAlign.center),
+          child: Text(
+            context.localizedMessage(error!),
+            textAlign: TextAlign.center,
+          ),
         ),
       );
     }
     if (entries.isEmpty) {
-      return Center(child: Text(isDestination ? '目录为空，可拖放到这里' : '目录为空'));
+      return Center(
+        child: Text(context.tr(isDestination ? '目录为空，可拖放到这里' : '目录为空')),
+      );
     }
     return ListView.builder(
       itemCount: entries.length,
@@ -1207,7 +1276,9 @@ class _FilePane extends StatelessWidget {
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
             ),
-            subtitle: Text(entry.isDirectory ? '文件夹' : formatBytes(entry.size)),
+            subtitle: Text(
+              entry.isDirectory ? context.tr('文件夹') : formatBytes(entry.size),
+            ),
             trailing: onAction == null
                 ? null
                 : IconButton(
@@ -1293,7 +1364,7 @@ class _TransferStatusBar extends StatelessWidget {
                 ),
                 if (overview.error != null)
                   Text(
-                    overview.error!,
+                    context.localizedMessage(overview.error!),
                     style: TextStyle(
                       color: Theme.of(context).colorScheme.error,
                     ),

@@ -4,6 +4,21 @@ import 'package:rtc_transfer/src/services/app_settings.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
+  test('persists a manual language and removes it for system mode', () async {
+    SharedPreferences.setMockInitialValues({
+      'identifier': 'localDevice',
+      'totpSecret': 'JBSWY3DPEHPK3PXP',
+      'hostToken': 'ABCDEFGHIJKLMNOPQRSTUVWXYZ123456',
+    });
+    final settings = await AppSettings.load();
+
+    expect(settings.languageCode, isNull);
+    await settings.setLanguageCode('ja');
+    expect(settings.languageCode, 'ja');
+    await settings.setLanguageCode(null);
+    expect(settings.languageCode, isNull);
+  });
+
   test(
     'persists LAN origin for paired devices and clears it on removal',
     () async {

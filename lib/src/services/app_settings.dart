@@ -22,6 +22,7 @@ class AppSettings {
   String get identifier => _preferences.getString('identifier') ?? '';
   String get totpSecret => _preferences.getString('totpSecret') ?? '';
   String get hostToken => _preferences.getString('hostToken') ?? '';
+  String? get languageCode => _preferences.getString('languageCode');
   String? get sharedRoot => _preferences.getString('sharedRoot');
   String? get sharedRootLabel => _preferences.getString('sharedRootLabel');
   String? get receiveDirectory => _preferences.getString('receiveDirectory');
@@ -71,6 +72,10 @@ class AppSettings {
 
   Future<void> setIdentifier(String value) =>
       _preferences.setString('identifier', value.trim());
+
+  Future<void> setLanguageCode(String? value) => value == null
+      ? _preferences.remove('languageCode')
+      : _preferences.setString('languageCode', value);
 
   Future<void> regenerateIdentifier() => setIdentifier(_randomString(16));
 

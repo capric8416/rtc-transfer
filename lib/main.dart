@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
 
+import 'src/l10n/app_localizations.dart';
 import 'src/services/app_settings.dart';
 import 'src/ui/home_page.dart';
 
@@ -9,10 +11,20 @@ Future<void> main() async {
   runApp(RtcTransferApp(settings: settings));
 }
 
-class RtcTransferApp extends StatelessWidget {
+class RtcTransferApp extends StatefulWidget {
   const RtcTransferApp({super.key, required this.settings});
 
   final AppSettings settings;
+
+  @override
+  State<RtcTransferApp> createState() => _RtcTransferAppState();
+}
+
+class _RtcTransferAppState extends State<RtcTransferApp> {
+  Locale? get _locale {
+    final code = widget.settings.languageCode;
+    return code == null ? null : Locale(code);
+  }
 
   @override
   Widget build(BuildContext context) => MaterialApp(
@@ -37,6 +49,17 @@ class RtcTransferApp extends StatelessWidget {
       useMaterial3: true,
     ),
     themeMode: ThemeMode.system,
-    home: HomePage(settings: settings),
+    locale: _locale,
+    supportedLocales: AppLocalizations.supportedLocales,
+    localizationsDelegates: const [
+      GlobalMaterialLocalizations.delegate,
+      GlobalWidgetsLocalizations.delegate,
+      GlobalCupertinoLocalizations.delegate,
+    ],
+    localeResolutionCallback: AppLocalizations.resolveLocale,
+    home: HomePage(
+      settings: widget.settings,
+      onLocaleChanged: (_) => setState(() {}),
+    ),
   );
 }
