@@ -18,6 +18,13 @@ enum PeerStatus { idle, waiting, connecting, connected, disconnected, error }
 
 enum PeerDirectoryKind { shared, receive }
 
+class ReceivedTextMessage {
+  const ReceivedTextMessage({required this.text, required this.receivedAt});
+
+  final String text;
+  final DateTime receivedAt;
+}
+
 typedef DevicePairedCallback =
     void Function(String identifier, DevicePlatform platform);
 
@@ -69,6 +76,7 @@ class PeerSession extends ChangeNotifier {
   final DevicePairedCallback? onPaired;
   final SignalingService _signaling = SignalingService();
   final List<TransferTask> transfers = [];
+  final List<ReceivedTextMessage> receivedTexts = [];
   TransferOverview? transferOverview;
 
   RTCPeerConnection? _peerConnection;
@@ -558,6 +566,16 @@ class PeerSession extends ChangeNotifier {
           onPaired?.call(identifier, DevicePlatform.fromWire(data['platform']));
         }
         break;
+      case 'text_message':
+        receivedTexts.insert(
+          0,
+          ReceivedTextMessage(
+            text: data['text'] as String? ?? '',
+            receivedAt: DateTime.now(),
+          ),
+        );
+        notifyListeners();
+        break;
       case 'list_request':
         await _sendDirectoryListing(
           data['path'] as String? ?? '',
@@ -954,6 +972,12 @@ class PeerSession extends ChangeNotifier {
         }
       }
     }
+  }
+
+  Future<void> sendText(String text) async {
+    final value = text.trim();
+    if (value.isEmpty) return;
+    await _sendJson({'type': 'text_message', 'text': value});
   }
 
   Future<void> sendRelativePath(

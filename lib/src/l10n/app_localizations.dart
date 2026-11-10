@@ -105,6 +105,11 @@ class AppLocalizations {
       '局域网设备发现启动失败': 'Failed to start LAN discovery',
       '无法读取目录': 'Unable to read directory',
       '传输失败': 'Transfer failed',
+      '发送文本': 'Send text',
+      '输入要发送的文本': 'Enter text to send',
+      '发送': 'Send',
+      '文本已发送': 'Text sent',
+      '收到的文本': 'Received text',
     },
     'fr': {
       '设置': 'Paramètres',

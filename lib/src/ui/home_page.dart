@@ -1024,6 +1024,55 @@ class _TransferWorkspaceState extends State<_TransferWorkspace> {
     await widget.onDisconnect();
   }
 
+  Future<void> _composeText() async {
+    final controller = TextEditingController();
+    final text = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(context.tr('发送文本')),
+        content: SizedBox(
+          width: 480,
+          child: TextField(
+            controller: controller,
+            autofocus: true,
+            minLines: 3,
+            maxLines: 8,
+            maxLength: 10000,
+            decoration: InputDecoration(
+              labelText: context.tr('输入要发送的文本'),
+              border: const OutlineInputBorder(),
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: Text(context.tr('取消')),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, controller.text),
+            child: Text(context.tr('发送')),
+          ),
+        ],
+      ),
+    );
+    controller.dispose();
+    if (text == null || text.trim().isEmpty || !mounted) return;
+    try {
+      await widget.session.sendText(text);
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(context.tr('文本已发送'))));
+      }
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('${context.tr('传输失败')}：$error')));
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final remoteMatches =
@@ -1110,6 +1159,21 @@ class _TransferWorkspaceState extends State<_TransferWorkspace> {
               ),
             ],
           ),
+          if (_mode == _TransferMode.send) ...[
+            const SizedBox(height: 8),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: OutlinedButton.icon(
+                onPressed: widget.session.isConnected ? _composeText : null,
+                icon: const Icon(Icons.text_fields),
+                label: Text(context.tr('发送文本')),
+              ),
+            ),
+          ],
+          if (widget.session.receivedTexts.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            _ReceivedTexts(messages: widget.session.receivedTexts),
+          ],
           const SizedBox(height: 10),
           Expanded(
             child: OrientationBuilder(
@@ -1148,6 +1212,47 @@ class _TransferWorkspaceState extends State<_TransferWorkspace> {
     final parent = p.posix.dirname(normalized);
     return parent == '.' ? '' : parent;
   }
+}
+
+class _ReceivedTexts extends StatelessWidget {
+  const _ReceivedTexts({required this.messages});
+
+  final List<ReceivedTextMessage> messages;
+
+  @override
+  Widget build(BuildContext context) => SizedBox(
+    height: 112,
+    child: Card(
+      margin: EdgeInsets.zero,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 8, 12, 4),
+            child: Text(
+              context.tr('收到的文本'),
+              style: Theme.of(context).textTheme.titleSmall,
+            ),
+          ),
+          Expanded(
+            child: ListView.builder(
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              itemCount: messages.length,
+              itemBuilder: (context, index) {
+                final message = messages[index];
+                final time = TimeOfDay.fromDateTime(message.receivedAt)
+                    .format(context);
+                return Padding(
+                  padding: const EdgeInsets.only(bottom: 6),
+                  child: SelectableText('$time  ${message.text}'),
+                );
+              },
+            ),
+          ),
+        ],
+      ),
+    ),
+  );
 }
 
 class _FilePane extends StatelessWidget {
